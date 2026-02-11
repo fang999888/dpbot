@@ -1,8 +1,9 @@
-# app.py - 确定性测试版本（完全绕过DeepSeek API）
-# 用途：验证LINE Bot部署是否成功，Render环境配置是否正确
+# app.py - DeepSeek 繁體中文正式版（充值後可用）
+# 功能：LINE 植物知識機器人，全程繁體中文，專業親切
 
 import os
 import json
+import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -11,66 +12,104 @@ from linebot.models import MessageEvent, TextMessage, TextSendMessage
 # ==================== 初始化配置 ====================
 app = Flask(__name__)
 
-# 从环境变量读取密钥（Render后台设置）
+# 從環境變數讀取金鑰（Render 後台設定）
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 
-# 检查必要环境变量是否设置
+# 檢查必要環境變數是否設定
 if not LINE_CHANNEL_SECRET:
-    print("错误: LINE_CHANNEL_SECRET 环境变量未设置")
+    print("錯誤: LINE_CHANNEL_SECRET 環境變數未設定")
 if not LINE_CHANNEL_ACCESS_TOKEN:
-    print("错误: LINE_CHANNEL_ACCESS_TOKEN 环境变量未设置")
+    print("錯誤: LINE_CHANNEL_ACCESS_TOKEN 環境變數未設定")
+if not DEEPSEEK_API_KEY:
+    print("錯誤: DEEPSEEK_API_KEY 環境變數未設定")
 
-# 初始化LINE Bot
+# 初始化 LINE Bot
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ==================== 测试回复函数（完全绕过DeepSeek）====================
-def get_test_reply(user_message):
-    """返回详细的测试状态信息，帮助诊断问题"""
+# DeepSeek API 設定
+DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+# ==================== 植物專家提示詞（繁體中文・台灣用語）====================
+PLANT_EXPERT_PROMPT = """你是一位專業的植物學家助手，擅長園藝、植栽養護和植物辨識。
+
+請**全程使用繁體中文（正體中文）**回答，語氣親切自然，像是一位在花市擺攤的老闆娘或園藝達人。
+
+回答規範：
+1. 🌱 **植物鑑別**：描述葉子形狀、花朵顏色、植株特徵，告訴用戶這是什麼植物
+2. 💧 **養護方法**：說明澆水頻率、日照需求、土壤選擇、適合溫度
+3. 🍂 **病害治療**：診斷可能病因，提供實用解決方案
+4. 🌿 **繁殖方式**：說明扦插、分株、播種等繁殖技巧
+5. ❌ **與植物無關的問題**：統一回覆：「不好意思，我是植物學專家助手，只能回答植物相關的問題喔～🪴 有任何花草樹木、園藝養護的問題都歡迎問我！」
+
+可以適時使用 🌱、🌿、🌸、🌻、🪴、🍀 等表情符號，讓回應更有親切感。"""
+
+# ==================== DeepSeek API 呼叫函式 ====================
+def ask_deepseek(question):
+    """呼叫 DeepSeek API 取得植物知識回覆"""
     
-    # 获取环境变量状态（不显示真实值，只显示是否已设置）
-    line_secret_status = "✅ 已设置" if LINE_CHANNEL_SECRET else "❌ 未设置"
-    line_token_status = "✅ 已设置" if LINE_CHANNEL_ACCESS_TOKEN else "❌ 未设置"
-    deepseek_key = os.getenv('DEEPSEEK_API_KEY')
-    deepseek_status = "✅ 已设置" if deepseek_key else "❌ 未设置"
+    # 檢查 API Key 是否存在
+    if not DEEPSEEK_API_KEY:
+        return "❌ 系統錯誤：AI 機器人尚未設定 API 金鑰，請聯繫管理員。"
     
-    # 构建详细的系统状态报告
-    reply = f"""🌱 **LINE Bot 确定性测试成功！**
-
-═══════════════════════
-✅ **你的机器人已经完全跑通！**
-
-📋 **系统状态：**
-• LINE Secret: {line_secret_status}
-• LINE Token: {line_token_status}
-• DeepSeek Key: {deepseek_status}
-
-💬 **你刚才发送的消息：**
-「{user_message}」
-
-═══════════════════════
-
-🔍 **问题诊断：**
-目前你收到「请稍后再试」的原因是：
-**DeepSeek 账户余额为 $0.00 USD**
-
-🚀 **解决方案（二选一）：**
-1️⃣ **充值 $5**（推荐）
-   → 登录 platform.deepseek.com
-   → 右上角头像 → 充值
-   → 充值后立即生效，无需改代码
-
-2️⃣ **改用免费 Gemini API**
-   → 我提供完整替换代码
-
-═══════════════════════
-⚡ 当前模式：确定性测试模式
-🌿 此回复直接由你的LINE Bot产生
-💪 部署成功！接下来只需解决API余额问题
-"""
+    headers = {
+        'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
+        'Content-Type': 'application/json'
+    }
     
-    return reply
+    # 建構完整的提示詞
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": "你是一位專業、耐心的植物學專家。請全程使用繁體中文回答。"},
+            {"role": "user", "content": f"{PLANT_EXPERT_PROMPT}\n\n用戶問題：{question}"}
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "stream": False
+    }
+    
+    try:
+        print(f"正在呼叫 DeepSeek API，問題：{question[:50]}...")
+        response = requests.post(
+            DEEPSEEK_API_URL, 
+            headers=headers, 
+            data=json.dumps(data), 
+            timeout=30
+        )
+        
+        print(f"DeepSeek API 狀態碼: {response.status_code}")
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        if 'choices' in result and len(result['choices']) > 0:
+            ai_reply = result['choices'][0]['message']['content'].strip()
+            print("✅ DeepSeek API 呼叫成功")
+            return ai_reply
+        else:
+            print(f"API 回傳格式異常: {result}")
+            return "🤖 AI 暫時無法理解這個問題，請換個方式問問看。"
+            
+    except requests.exceptions.Timeout:
+        print("DeepSeek API 逾時")
+        return "⏰ AI 思考時間有點長，請稍後再試。"
+    except requests.exceptions.HTTPError as e:
+        print(f"DeepSeek API HTTP 錯誤: {e}")
+        if response.status_code == 401:
+            return "❌ API 金鑰無效，請檢查 DeepSeek API Key。"
+        elif response.status_code == 402:
+            return "💰 API 餘額不足，請至 DeepSeek 平台儲值。"
+        elif response.status_code == 429:
+            return "⚠️ 呼叫次數過多，請稍後再試。"
+        else:
+            return "🔧 AI 服務暫時異常，請稍後重試。"
+    except Exception as e:
+        print(f"呼叫 DeepSeek API 時出現未預期錯誤: {e}")
+        return "🌿 植物專家正在思考中，請稍後再試。"
 
 # ==================== LINE Webhook 路由 ====================
 @app.route("/callback", methods=['POST'])
@@ -80,53 +119,49 @@ def callback():
     signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
     
-    print(f"收到LINE请求，签名: {signature[:20]}...")
-    
     try:
         handler.handle(body, signature)
-        print("LINE请求处理成功")
     except InvalidSignatureError:
-        print("签名验证失败")
         abort(400)
-    except Exception as e:
-        print(f"处理LINE请求时出错: {e}")
-        abort(500)
     
     return 'OK', 200
 
-# ==================== 消息事件处理器 ====================
+# ==================== 訊息事件處理器 ====================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    """处理用户发送的文本消息 - 测试模式"""
+    """處理用戶發送的文字訊息"""
     
     user_message = event.message.text
     reply_token = event.reply_token
     user_id = event.source.user_id
     
-    print(f"收到用户 {user_id} 的消息: {user_message}")
+    print(f"收到用戶 {user_id} 的訊息: {user_message}")
     
-    # 【关键】直接返回测试回复，完全不调用任何外部API
-    test_reply = get_test_reply(user_message)
+    # 呼叫 DeepSeek 取得回覆
+    ai_response = ask_deepseek(user_message)
     
+    # 發送回覆給 LINE
     try:
         line_bot_api.reply_message(
             reply_token,
-            TextSendMessage(text=test_reply)
+            TextSendMessage(text=ai_response)
         )
-        print("✅ 测试回复发送成功！")
+        print("✅ 回覆發送成功")
     except Exception as e:
-        print(f"❌ 发送回复失败: {e}")
+        print(f"❌ 發送回覆失敗: {e}")
 
-# ==================== 健康检查路由 ====================
+# ==================== 健康檢查路由 ====================
 @app.route("/", methods=['GET'])
 def health_check():
-    return "✅ LINE Bot 确定性测试模式运行中 - 2026年2月", 200
+    """健康檢查，防止 Render 休眠"""
+    return "🌱 植物知識 LINE Bot 繁體中文版・運行中", 200
 
 @app.route("/health", methods=['GET'])
 def health():
-    return json.dumps({"status": "alive", "mode": "test"}), 200
+    """健康檢查端點"""
+    return json.dumps({"status": "alive", "service": "plant-bot-zh-tw"}), 200
 
-# ==================== 启动入口 ====================
+# ==================== 啟動入口 ====================
 if __name__ == "__main__":
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
