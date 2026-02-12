@@ -1,8 +1,8 @@
-# app.py - 植物機器人 完整版（每日推播＋訂閱管理）
+# app.py - 植物機器人 完整版（內建排程器，完全免費）
 import os
 import json
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -11,6 +11,10 @@ from linebot.models import (
     FollowEvent, UnfollowEvent
 )
 from supabase import create_client, Client
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
+import atexit
 
 # ==================== 初始化 ====================
 app = Flask(__name__)
@@ -29,6 +33,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 # 初始化 Supabase（只有在環境變數都有時才初始化）
 if SUPABASE_URL and SUPABASE_KEY:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("✅ Supabase 連線成功")
 else:
     supabase = None
     print("⚠️ 未設定 Supabase 環境變數，訂閱功能將無法使用")
@@ -93,7 +98,7 @@ def ask_deepseek(question):
         print(f"API錯誤: {e}")
         return "🌿 小植正在澆花，晚點回你喔～"
 
-# ==================== 訂閱管理（只有在 Supabase 可用時才啟用）====================
+# ==================== 訂閱管理 ====================
 def subscribe_user(user_id):
     """用戶加入好友或輸入「訂閱」時，記錄訂閱"""
     if not supabase:
@@ -171,13 +176,13 @@ def get_daily_plant_fact():
         print(f"產生每日知識失敗: {e}")
         return "🌿 蘆薈晚上會釋放氧氣，很適合放臥室喔！你也有養蘆薈嗎？"
 
-# ==================== 推播端點 ====================
-@app.route("/cron/daily-push", methods=['GET'])
-def cron_daily_push():
-    """給 Render Cron Job 呼叫的端點（台灣早上8點 = UTC 0點）"""
+# ==================== 推播函數 ====================
+def send_daily_push():
+    """發送每日推播給所有訂閱用戶（由排程器呼叫）"""
     
     if not supabase:
-        return json.dumps({"status": "error", "message": "Supabase 未設定"}), 200
+        print("⚠️ Supabase 未設定，無法推播")
+        return
     
     today = datetime.now(timezone.utc).date().isoformat()
     
@@ -190,7 +195,7 @@ def cron_daily_push():
         
         if not subscribers.data:
             print("今天沒有需要推播的用戶")
-            return json.dumps({"status": "no_subscribers"}), 200
+            return
         
         daily_fact = get_daily_plant_fact()
         
@@ -213,11 +218,35 @@ def cron_daily_push():
             except Exception as e:
                 print(f"❌ 推播失敗 {user_id}: {e}")
         
-        return json.dumps({"status": "success", "sent": success_count}), 200
+        print(f"📊 推播完成：成功 {success_count} / 總共 {len(subscribers.data)}")
         
     except Exception as e:
         print(f"推播處理失敗: {e}")
-        return json.dumps({"status": "error", "message": str(e)}), 200
+
+# ==================== 內建排程器（完全免費！）====================
+def init_scheduler():
+    """初始化背景排程器，每天早上8點發送推播"""
+    scheduler = BackgroundScheduler()
+    
+    # 設定台灣時區
+    tz = pytz.timezone('Asia/Taipei')
+    
+    # 每天早上8點執行
+    scheduler.add_job(
+        func=send_daily_push,
+        trigger=CronTrigger(hour=8, minute=0, timezone=tz),
+        id='daily_plant_push',
+        name='每日植物小知識推播',
+        replace_existing=True
+    )
+    
+    scheduler.start()
+    print("✅ 背景排程器已啟動，每天台灣時間 08:00 執行推播")
+    
+    # 確保應用關閉時排程器也關閉
+    atexit.register(lambda: scheduler.shutdown())
+    
+    return scheduler
 
 # ==================== LINE Webhook ====================
 @app.route("/callback", methods=['POST'])
@@ -240,7 +269,6 @@ def handle_follow(event):
     
     welcome_msg = "🌱 你好呀～我是「小植」！\n\n問我任何植物問題，我會簡短回答，像朋友聊天一樣～\n\n例如：\n• 多肉怎麼澆水？\n• 這是什麼植物？\n• 葉子變黃怎麼辦？"
     
-    # 如果有啟用 Supabase，才加入訂閱訊息
     if supabase:
         subscribe_user(user_id)
         welcome_msg += "\n\n📬 你已經**自動訂閱**每日植物小知識！\n每天早上8點會送你一則有趣的小知識～\n如果想取消，隨時跟我說「取消訂閱」就可以囉！"
@@ -264,7 +292,6 @@ def handle_message(event):
     reply_token = event.reply_token
     user_id = event.source.user_id
     
-    # 訂閱相關指令（只有在有 Supabase 時才處理）
     if supabase:
         if user_message in ["取消訂閱", "停止推播", "unsubscribe", "不訂閱"]:
             unsubscribe_user(user_id)
@@ -278,7 +305,6 @@ def handle_message(event):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
             return
     
-    # 一般問題 → 呼叫 DeepSeek
     ai_response = ask_deepseek(user_message)
     line_bot_api.reply_message(
         reply_token,
@@ -289,17 +315,30 @@ def handle_message(event):
 @app.route("/", methods=['GET'])
 def health_check():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
-    return f"🌱 植物機器人 完整版運行中 | Supabase: {supabase_status}", 200
+    scheduler_status = "✅ 運行中" if 'scheduler' in globals() else "⚠️ 未啟動"
+    return f"🌱 植物機器人 完整版（內建排程）| Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
 
 @app.route("/health", methods=['GET'])
 def health():
     return json.dumps({
         "status": "alive", 
         "service": "plant-bot",
-        "supabase": supabase is not None
+        "supabase": supabase is not None,
+        "scheduler": "running"
     }), 200
+
+# ==================== 手動觸發推播（測試用）====================
+@app.route("/test-push", methods=['GET'])
+def test_push():
+    """手動觸發推播，用於測試"""
+    send_daily_push()
+    return json.dumps({"status": "push triggered"}), 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
+    # 啟動排程器（只有在正式環境才啟用）
+    if os.getenv('RENDER', False) or os.getenv('ENABLE_SCHEDULER', 'true').lower() == 'true':
+        scheduler = init_scheduler()
+    
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
