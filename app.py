@@ -400,11 +400,15 @@ def health():
         "supabase": supabase is not None,
         "scheduler": "running"
     }), 200
-
 # ==================== 啟動 ====================
 if __name__ == "__main__":
-    if os.getenv('RENDER', False) or os.getenv('ENABLE_SCHEDULER', 'true').lower() == 'true':
-        scheduler = init_scheduler()
+    # 只有在 Render 環境或明確啟用時才啟動排程器
+    if os.getenv('RENDER', False) or os.getenv('ENABLE_SCHEDULER', 'false').lower() == 'true':
+        try:
+            scheduler = init_scheduler()
+            print("✅ 排程器已啟動")
+        except Exception as e:
+            print(f"❌ 排程器啟動失敗: {e}")
     
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
