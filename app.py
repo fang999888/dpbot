@@ -1,10 +1,10 @@
-# app.py - 蕨積3.0 會看圖版（強制成功版）
+# app.py - 蕨積賣萌版（看到圖片就裝可愛）
 import os
 import json
 import requests
 import uuid
 import time
-import base64
+import random
 from datetime import datetime, timezone
 from flask import Flask, request, abort, jsonify, send_file
 from linebot import LineBotApi, WebhookHandler
@@ -19,10 +19,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
 import atexit
-import google.generativeai as genai
-from io import BytesIO
-import PIL.Image
-from PIL import Image as PILImage
 
 app = Flask(__name__)
 
@@ -30,7 +26,6 @@ app = Flask(__name__)
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 
@@ -45,31 +40,25 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     supabase = None
 
-# Gemini
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    # 使用最新的 vision 模型
-    gemini_vision_model = genai.GenerativeModel('gemini-2.0-flash-vision')
-    print("✅ Gemini Vision 初始化成功")
-else:
-    gemini_vision_model = None
-    print("⚠️ 未設定 Gemini API Key，圖片辨識功能無法使用")
-
 # DeepSeek
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 # ==================== 圖片暫存區 ====================
 image_temp_store = {}  # user_id -> {image_bytes, timestamp}
-pending_vision = {}    # user_id -> True（等待使用者選擇模式）
-app_base_url = None
+pending_vision = {}    # user_id -> True
 
-# ==================== 🎭 蕨積人設 ====================
+# ==================== 🎭 蕨積人設（精簡笑話版）====================
 PERSONA_PROMPT = """你是「蕨積」，一個幽默風趣的植物好朋友！
 
 【核心指令】
-🔥 1. 字數「嚴格控制在30字內」！
+🔥 1. 字數「嚴格控制在30字內」！超過算我輸
 🔥 2. 每句話都要像脫口秀，輕鬆好笑
-🔥 3. 表情符號最多1個
+🔥 3. 表情符號最多1個，不要洗版
+
+【回答風格】
+- 開門見山，不囉嗦
+- 像朋友互虧，不要太客氣
+- 植物問題一樣專業，但要短
 
 【範例】
 用戶：多肉怎麼澆水？
@@ -80,6 +69,14 @@ PERSONA_PROMPT = """你是「蕨積」，一個幽默風趣的植物好朋友！
 
 用戶：這是什麼植物？
 蕨積：龜背芋。它葉子破洞是天生的，不是蟲咬啦！
+
+用戶：你好可愛
+蕨積：我知道（撥葉子）
+
+【鐵則】
+❌ 不要心靈雞湯
+❌ 不要囉嗦關心
+✅ 短！快！好笑！
 """
 
 # ==================== DeepSeek 呼叫 ====================
@@ -107,95 +104,9 @@ def ask_deepseek(question):
         response.raise_for_status()
         result = response.json()
         return result['choices'][0]['message']['content'].strip()
-    except:
-        return "🌿 葉子被風吹亂了"
-
-# ==================== 🔥 強化版圖片辨識（保證成功）====================
-def analyze_image_with_gemini(image_bytes, prompt="這是什麼植物？請用20字內簡短回答，繁體中文"):
-    """強化版圖片辨識 - 多重嘗試確保成功"""
-    if not gemini_vision_model:
-        return "🌿 蕨積的近視還沒治好，暫時不能看圖～"
-    
-    try:
-        # === 方法1：直接傳PIL Image ===
-        try:
-            img = PILImage.open(BytesIO(image_bytes))
-            
-            # 轉為RGB
-            if img.mode in ('RGBA', 'LA', 'P'):
-                rgb_img = PILImage.new('RGB', img.size, (255, 255, 255))
-                rgb_img.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
-                img = rgb_img
-            
-            # 縮小圖片
-            max_size = (800, 800)
-            img.thumbnail(max_size, PILImage.Resampling.LANCZOS)
-            
-            response = gemini_vision_model.generate_content(
-                [prompt, img],
-                generation_config={"temperature": 0.2, "max_output_tokens": 100}
-            )
-            
-            if response and response.text and len(response.text.strip()) > 0:
-                return response.text.strip()
-        except Exception as e:
-            print(f"方法1失敗: {e}")
-        
-        # === 方法2：改用base64 ===
-        try:
-            # 重新載入原始圖片
-            img = PILImage.open(BytesIO(image_bytes))
-            
-            # 轉為JPEG（確保相容性）
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            
-            # 壓縮圖片
-            output = BytesIO()
-            img.save(output, format='JPEG', quality=85, optimize=True)
-            jpeg_bytes = output.getvalue()
-            
-            # 轉base64
-            img_base64 = base64.b64encode(jpeg_bytes).decode('utf-8')
-            
-            # 直接呼叫Gemini API（繞過SDK）
-            url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-vision:generateContent?key={GEMINI_API_KEY}"
-            
-            headers = {'Content-Type': 'application/json'}
-            data = {
-                "contents": [{
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": img_base64
-                            }
-                        }
-                    ]
-                }],
-                "generationConfig": {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 100
-                }
-            }
-            
-            response = requests.post(url, headers=headers, json=data, timeout=30)
-            result = response.json()
-            
-            if 'candidates' in result and len(result['candidates']) > 0:
-                text = result['candidates'][0]['content']['parts'][0]['text'].strip()
-                if text:
-                    return text
-        except Exception as e:
-            print(f"方法2失敗: {e}")
-        
-        # === 方法3：強制回覆（當作植物）===
-        return "🌿 這應該是某種觀葉植物，要拍更清楚一點我才能認出品種喔！"
-        
     except Exception as e:
-        print(f"所有方法都失敗: {e}")
-        return "🌿 這張照片有點模糊，再拍清楚一點傳給我，我幫你認品種！"
+        print(f"DeepSeek錯誤: {e}")
+        return "🌿 葉子被風吹亂了"
 
 # ==================== 訂閱管理 ====================
 def subscribe_user(user_id):
@@ -210,26 +121,41 @@ def subscribe_user(user_id):
                 'is_active': True
             }
             supabase.table('subscribers').insert(data).execute()
+            print(f"✅ 新訂閱: {user_id}")
         else:
             supabase.table('subscribers').update({'is_active': True}).eq('user_id', user_id).execute()
+            print(f"✅ 重新訂閱: {user_id}")
         return True
-    except:
+    except Exception as e:
+        print(f"訂閱失敗: {e}")
         return False
 
 def unsubscribe_user(user_id):
     if not supabase: return False
     try:
         supabase.table('subscribers').update({'is_active': False}).eq('user_id', user_id).execute()
+        print(f"❌ 取消訂閱: {user_id}")
         return True
-    except:
+    except Exception as e:
+        print(f"取消訂閱失敗: {e}")
         return False
+
+def get_subscription_status(user_id):
+    if not supabase: return None
+    try:
+        result = supabase.table('subscribers').select('*').eq('user_id', user_id).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        print(f"查詢訂閱失敗: {e}")
+        return None
 
 # ==================== 每日小知識 ====================
 def get_daily_plant_fact():
-    fact_prompt = """給一則「20字內」的搞笑植物知識。
+    fact_prompt = """給一則「20字內」的搞笑植物知識，要讓人會心一笑。
 範例：
 「香蕉是莓果，草莓不是。植物界也搞詐欺🍌」
-「蘆薈晚上吐氧氣，比咖啡提神🌵」"""
+「蘆薈晚上吐氧氣，比咖啡提神🌵」
+「含羞草不是害羞，是覺得你手髒」"""
     
     headers = {
         'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
@@ -239,7 +165,8 @@ def get_daily_plant_fact():
     data = {
         "model": "deepseek-chat",
         "messages": [{"role": "user", "content": fact_prompt}],
-        "max_tokens": 100
+        "max_tokens": 100,
+        "temperature": 0.9
     }
     
     try:
@@ -263,10 +190,10 @@ def send_daily_push():
                     TextSendMessage(text=f"🌱 **蕨積早安**\n\n{fact}")
                 )
                 supabase.table('subscribers').update({'last_push_date': today}).eq('user_id', sub['user_id']).execute()
-            except:
-                pass
-    except:
-        pass
+            except Exception as e:
+                print(f"推播失敗: {e}")
+    except Exception as e:
+        print(f"推播處理失敗: {e}")
 
 # ==================== 排程器 ====================
 def init_scheduler():
@@ -274,9 +201,23 @@ def init_scheduler():
     tz = pytz.timezone('Asia/Taipei')
     scheduler.add_job(func=send_daily_push, trigger=CronTrigger(hour=8, minute=0, timezone=tz), id='daily_push', replace_existing=True)
     scheduler.start()
-    print("✅ 排程器已啟動")
+    print("✅ 排程器已啟動，每天 08:00 推播")
     atexit.register(lambda: scheduler.shutdown())
     return scheduler
+
+# ==================== 🌟 蕨積賣萌圖片回覆庫 ====================
+SORRY_MESSAGES = [
+    "🌿 這我沒辦法讀，很抱歉～你要不要直接問老闆？",
+    "🌿 我看不懂這張圖，還是你直接問老闆比較快！",
+    "🌿 我的眼睛糊到了，這張先跳過，問老闆吧～",
+    "🌿 這張太難了，留給老闆來回答！",
+    "🌿 蕨積當機中...請洽老闆本人",
+    "🌿 我只是一盆蕨類，看不懂照片啦！",
+    "🌿 這圖超出我的葉子範圍了，問老闆！",
+    "🌿 老闆說這題他來回答比較好",
+    "🌿 我負責可愛就好，專業問題問老闆～",
+    "🌿 葉子遮到眼睛了，看不到啦！"
+]
 
 # ==================== LINE Webhook ====================
 @app.route("/callback", methods=['POST'])
@@ -295,14 +236,14 @@ def callback():
 def handle_follow(event):
     user_id = event.source.user_id
     if supabase: subscribe_user(user_id)
-    welcome_msg = "🌿 蕨積來啦！\n傳植物照片給我，幫你認品種！\n明早8點見～"
+    welcome_msg = "🌿 蕨積來啦！\n我負責可愛，老闆負責專業～\n傳照片給我的話，我會叫老闆來看喔！"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_msg))
 
 @handler.add(UnfollowEvent)
 def handle_unfollow(event):
     if supabase: unsubscribe_user(event.source.user_id)
 
-# ==================== 圖片訊息處理 ====================
+# ==================== 🌟 圖片訊息處理（賣萌版）====================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
@@ -310,33 +251,34 @@ def handle_image_message(event):
     message_id = event.message.id
     
     try:
-        # 下載圖片
+        # 下載圖片（還是要下載，不然LINE會一直重送）
         message_content = line_bot_api.get_message_content(message_id)
         image_bytes = b''
         for chunk in message_content.iter_content():
             image_bytes += chunk
         
-        # 暫存圖片
-        image_temp_store[user_id] = {
-            'data': image_bytes,
-            'timestamp': time.time()
-        }
-        pending_vision[user_id] = True
+        # 隨機選一句賣萌回覆
+        reply_text = random.choice(SORRY_MESSAGES)
         
-        # 直接分析圖片（不經過選單）
-        analysis = analyze_image_with_gemini(image_bytes, "這是什麼植物？請用20字內簡短回答")
+        # 回覆用戶
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text=reply_text)
+        )
         
-        # 清除暫存
-        pending_vision.pop(user_id, None)
-        image_temp_store.pop(user_id, None)
+        # 清除暫存（如果有）
+        if user_id in pending_vision:
+            pending_vision.pop(user_id)
+        if user_id in image_temp_store:
+            image_temp_store.pop(user_id)
         
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=analysis))
+        print(f"📸 用戶 {user_id} 傳了圖片，蕨積賣萌回覆")
         
     except Exception as e:
         print(f"圖片處理失敗: {e}")
         line_bot_api.reply_message(
             reply_token,
-            TextSendMessage(text="🌿 圖片處理失敗，再試一次？")
+            TextSendMessage(text="🌿 圖片處理失敗，老闆說再試一次？")
         )
 
 # ==================== 文字訊息處理 ====================
@@ -348,13 +290,22 @@ def handle_text_message(event):
     
     # 訂閱相關指令
     if supabase:
-        if user_message in ["取消訂閱", "停止推播"]:
+        if user_message in ["取消訂閱", "停止推播", "unsubscribe"]:
             unsubscribe_user(user_id)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="📭 已取消"))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="📭 已取消，想回來說「訂閱」"))
             return
-        if user_message in ["訂閱"]:
+        if user_message in ["訂閱", "subscribe"]:
             subscribe_user(user_id)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功"))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！明早8點見"))
+            return
+        if user_message in ["訂閱狀態", "查詢訂閱", "status"]:
+            status = get_subscription_status(user_id)
+            if status:
+                active = "✅ 已訂閱" if status.get('is_active') else "❌ 已取消"
+                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"📋 訂閱狀態：{active}"))
+            else:
+                subscribe_user(user_id)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="🌿 已幫你自動訂閱！"))
             return
     
     # 一般聊天
@@ -369,15 +320,16 @@ def test_push():
 
 @app.route("/", methods=['GET'])
 def health():
-    gemini_status = "✅ 已連線" if gemini_vision_model else "⚠️ 未設定"
-    return f"🌿 蕨積（強制成功版） | Gemini: {gemini_status}", 200
+    supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
+    scheduler_status = "✅ 運行中"
+    return f"🌿 蕨積賣萌版 | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
     try:
         scheduler = init_scheduler()
-    except:
-        pass
+    except Exception as e:
+        print(f"❌ 排程器啟動失敗: {e}")
     
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
