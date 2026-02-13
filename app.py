@@ -1,3 +1,12 @@
+from linebot.models import (
+    MessageEvent,
+    TextMessage,
+    ImageMessage,
+    FollowEvent,
+    PostbackEvent,
+    TextSendMessage
+)
+
 import os
 import sys
 import base64
