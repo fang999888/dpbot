@@ -1,5 +1,6 @@
 import os
 import sys
+import base64
 import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
@@ -14,12 +15,12 @@ from linebot.models import (
 # ===============================
 app = Flask(__name__)
 
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
-GEN_API_KEY = os.getenv("GEN_API_KEY", "")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+GEN_API_KEY = os.getenv("GEN_API_KEY")  # 可以沒有
 
-if not LINE_CHANNEL_SECRET or not LINE_CHANNEL_ACCESS_TOKEN or not GEN_API_KEY:
-    print("❌ 環境變數未完整設定")
+if not LINE_CHANNEL_SECRET or not LINE_CHANNEL_ACCESS_TOKEN:
+    print("❌ LINE 環境變數未設定")
     sys.exit(1)
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -28,7 +29,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 GEN_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 # ===============================
-# Webhook 入口
+# Webhook
 # ===============================
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -39,114 +40,118 @@ def callback():
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
+
     return "OK"
 
 # ===============================
-# 事件處理
+# Follow
 # ===============================
 @handler.add(FollowEvent)
 def handle_follow(event):
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text="👋 歡迎使用 蕨積植物 AI\n請直接傳送植物照片進行診斷。")
+        TextSendMessage(
+            text="👋 歡迎使用「蕨積植物 AI」\n請直接傳送植物照片進行診斷。"
+        )
     )
 
-# -------------------------------
-# 文字訊息（智慧回覆）
-# -------------------------------
+# ===============================
+# Text Message（不鸚鵡）
+# ===============================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
-    user_text = event.message.text.strip()
-    
-    # 這裡用 Gemini 產生智慧回覆
-    prompt = f"你是一位友善植物助理，請用繁體中文回覆，避免重複使用者文字：'{user_text}'"
-    
-    try:
-        res = requests.post(
-            f"{GEN_API_URL}?key={GEN_API_KEY}",
-            json={
-                "contents": [{"parts":[{"text": prompt}]}]
-            },
-            timeout=25
-        )
-        data = res.json()
-        reply = data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        reply = "抱歉，我暫時無法回答，請稍後再試。"
+    text = event.message.text.strip()
+
+    if "怎麼" in text or "如何" in text:
+        reply = "🌿 如果是植物問題，建議直接上傳照片，我可以幫你看得更準確。"
+    elif "你好" in text or "hi" in text.lower():
+        reply = "你好！我是蕨積植物 AI，可以協助植物辨識與照護建議。"
+    else:
+        reply = "📸 我目前最擅長看植物照片，歡迎直接上傳圖片。"
 
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=reply)
     )
 
-# -------------------------------
-# 圖片訊息 → Gemini Vision
-# -------------------------------
+# ===============================
+# Image Message（V3）
+# ===============================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
-    reply_token = event.reply_token
     user_id = event.source.user_id
 
-    # Step1: 立即回覆已收到
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="📸 已收到您的植物照片，V3 圖像模組已接上，正在分析中…")
-    )
-
-    # Step2: 後台處理圖片
-    process_image(user_id, event.message.id)
-
-# -------------------------------
-# Postback
-# -------------------------------
-@handler.add(PostbackEvent)
-def handle_postback(event):
-    data = event.postback.data
-    if data == "retry":
-        reply = "🔁 請重新上傳一張清楚的植物照片"
-    else:
-        reply = f"📌 收到操作：{data}"
+    # 第一句：一定回
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=reply)
+        TextSendMessage(
+            text="📸 已收到植物照片，V3 圖像模組已接上，分析中…"
+        )
     )
 
-# -------------------------------
-# 圖像分析函數
-# -------------------------------
+    # 第二句：一定 push
+    process_image(user_id, event.message.id)
+
+# ===============================
+# Postback
+# ===============================
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(text="📌 操作已收到，請繼續傳送植物照片。")
+    )
+
+# ===============================
+# 圖像分析（有 key 用 Gemini，沒 key 用假資料）
+# ===============================
 def process_image(user_id, message_id):
     try:
         # 下載圖片
         message_content = line_bot_api.get_message_content(message_id)
-        image_bytes = b""
-        for chunk in message_content.iter_content():
-            image_bytes += chunk
+        image_bytes = b"".join(message_content.iter_content())
 
-        # 轉 base64
-        import base64
-        b64_img = base64.b64encode(image_bytes).decode("utf-8")
+        # 沒有 Gemini Key → fallback
+        if not GEN_API_KEY:
+            result_text = (
+                "🌿 植物初步診斷（示範模式）：\n"
+                "植物名稱：待辨識\n"
+                "水分狀況：可能偏乾\n"
+                "光照狀況：建議明亮散射光\n"
+                "健康建議：保持通風，避免積水\n\n"
+                "ℹ️ 目前尚未啟用進階圖像辨識模組"
+            )
+        else:
+            # 有 key → Gemini Vision
+            b64_img = base64.b64encode(image_bytes).decode("utf-8")
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {
+                            "text": (
+                                "你是一位植物專家。請分析此圖並提供："
+                                "1.名稱 2.水分狀況 3.光照狀況 4.健康建議。"
+                                "請用繁體中文回答。"
+                            )
+                        },
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": b64_img
+                            }
+                        }
+                    ]
+                }]
+            }
 
-        # Gemini Vision API call
-        prompt = (
-            "你是一位植物專家。請分析此圖並提供："
-            "1.名稱 2.水分狀況(充足/建議補水/過濕) "
-            "3.光照狀況(良好/偏弱) 4.健康建議。"
-            "請用親切的繁體中文回答。"
-        )
-        payload = {
-            "contents": [{
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type":"image/jpeg","data":b64_img}}
-                ]
-            }]
-        }
+            res = requests.post(
+                f"{GEN_API_URL}?key={GEN_API_KEY}",
+                json=payload,
+                timeout=30
+            )
+            data = res.json()
+            result_text = data["candidates"][0]["content"]["parts"][0]["text"]
 
-        res = requests.post(f"{GEN_API_URL}?key={GEN_API_KEY}", json=payload, timeout=30)
-        data = res.json()
-        result_text = data["candidates"][0]["content"]["parts"][0]["text"]
-
-        # push 給用戶（第二則回覆）
         line_bot_api.push_message(
             user_id,
             TextSendMessage(text=result_text)
@@ -155,11 +160,11 @@ def process_image(user_id, message_id):
     except Exception as e:
         line_bot_api.push_message(
             user_id,
-            TextSendMessage(text=f"⚠️ 圖像分析失敗：{str(e)}")
+            TextSendMessage(text=f"⚠️ 分析過程發生錯誤：{e}")
         )
 
 # ===============================
-# Render / 本機啟動
+# 啟動
 # ===============================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
