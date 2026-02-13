@@ -1,4 +1,4 @@
-# app.py - 蕨積3.0 會看圖片的植物醫生（Gemini Vision + DeepSeek）
+# app.py - 蕨積3.0 會看圖片的植物醫生（Gemini Vision + DeepSeek）- 完整修正版
 import os
 import json
 import requests
@@ -10,7 +10,8 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, ImageMessage, TextSendMessage, ImageSendMessage,
-    FollowEvent, PostbackEvent,  UnfollowEvent, QuickReply, QuickReplyButton, PostbackAction
+    FollowEvent, UnfollowEvent, PostbackEvent,
+    QuickReply, QuickReplyButton, PostbackAction
 )
 from supabase import create_client, Client
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -19,6 +20,8 @@ import pytz
 import atexit
 import google.generativeai as genai
 from io import BytesIO
+import PIL.Image
+from PIL import Image as PILImage
 
 app = Flask(__name__)
 
@@ -41,23 +44,25 @@ if SUPABASE_URL and SUPABASE_KEY:
 else:
     supabase = None
 
-# Gemini
+# Gemini - 使用最新版模型
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    gemini_vision_model = genai.GenerativeModel('gemini-1.5-flash')  # 便宜又快，適合植物辨識
+    # 使用最新的 vision 模型
+    gemini_vision_model = genai.GenerativeModel('gemini-2.0-flash-vision')
+    # 備用模型（如果主要模型失敗）
+    gemini_backup_model = genai.GenerativeModel('gemini-1.5-pro-vision')
     print("✅ Gemini Vision 初始化成功")
 else:
     gemini_vision_model = None
+    gemini_backup_model = None
     print("⚠️ 未設定 Gemini API Key，圖片辨識功能無法使用")
 
 # DeepSeek
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# ==================== 圖片暫存區（給LINE非同步機制用）====================
+# ==================== 圖片暫存區 ====================
 image_temp_store = {}  # user_id -> {image_bytes, timestamp}
 pending_vision = {}    # user_id -> True（等待使用者選擇模式）
-
-# 標註圖片暫存區（給Agentic Vision回傳用）
 annotated_image_store = {}  # image_id -> {data: bytes, created_at: timestamp}
 app_base_url = None  # 會在webhook時自動偵測
 
@@ -119,34 +124,79 @@ def ask_deepseek(question):
         response.raise_for_status()
         result = response.json()
         return result['choices'][0]['message']['content'].strip()
-    except:
+    except Exception as e:
+        print(f"DeepSeek錯誤: {e}")
         return "🌿 葉子被風吹亂了"
 
-# ==================== Gemini Vision 圖片辨識 ====================
+# ==================== Gemini Vision 圖片辨識（完整修正版）====================
 def analyze_image_with_gemini(image_bytes, prompt="這是什麼植物？請用20字內簡短回答，繁體中文"):
-    """使用 Gemini Vision 分析圖片內容"""
+    """使用 Gemini Vision 分析圖片內容（完整修正版）"""
     if not gemini_vision_model:
         return "🌿 蕨積的近視還沒治好，暫時不能看圖～"
     
     try:
-        # 將圖片bytes轉換為Gemini可讀格式
-        img = genai.upload_file(io.BytesIO(image_bytes))
+        # 將bytes轉為PIL Image
+        img = PILImage.open(BytesIO(image_bytes))
         
-        # 產生回應
-        response = gemini_vision_model.generate_content(
-            [prompt, img],
-            generation_config={
-                "temperature": 0.4,
-                "max_output_tokens": 100,
-            }
-        )
+        # 轉為RGB（處理PNG透明背景）
+        if img.mode in ('RGBA', 'LA', 'P'):
+            rgb_img = PILImage.new('RGB', img.size, (255, 255, 255))
+            rgb_img.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+            img = rgb_img
         
-        return response.text.strip()
+        # 縮小圖片（如果太大），Gemini 最佳解析度約 1024x1024
+        max_size = (1024, 1024)
+        img.thumbnail(max_size, PILImage.Resampling.LANCZOS)
+        
+        # 更明確的提示詞
+        enhanced_prompt = f"請仔細看這張圖片。{prompt} 如果看到植物，告訴我名稱；如果沒有植物，就說『這不是植物照片喔』。"
+        
+        # 使用主要模型
+        try:
+            response = gemini_vision_model.generate_content(
+                [enhanced_prompt, img],
+                generation_config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 100,
+                }
+            )
+            
+            if response and response.text:
+                return response.text.strip()
+            else:
+                raise Exception("空回應")
+                
+        except Exception as e:
+            print(f"主要模型失敗: {e}，嘗試備用模型")
+            
+            # 嘗試備用模型
+            if gemini_backup_model:
+                response = gemini_backup_model.generate_content(
+                    [enhanced_prompt, img],
+                    generation_config={
+                        "temperature": 0.3,
+                        "max_output_tokens": 100,
+                    }
+                )
+                if response and response.text:
+                    return response.text.strip()
+            
+            raise Exception("所有模型都失敗")
+            
     except Exception as e:
-        print(f"Gemini Vision 錯誤: {e}")
-        return "🌿 這張圖太難了，換一張試試？"
+        print(f"Gemini Vision 完整錯誤: {e}")
+        # 更詳細的錯誤訊息
+        error_msg = str(e)
+        if "API key" in error_msg or "permission" in error_msg:
+            return "🔑 Gemini 金鑰權限不足，請檢查設定"
+        elif "size" in error_msg.lower():
+            return "📏 圖片太大囉，換一張小一點的"
+        elif "format" in error_msg.lower():
+            return "🖼️ 圖片格式不支援，請用 JPG 或 PNG"
+        else:
+            return "🌿 這張圖太難了，換一張試試？"
 
-# ==================== 訂閱管理（維持原樣）====================
+# ==================== 訂閱管理 ====================
 def subscribe_user(user_id):
     if not supabase: return False
     try:
@@ -159,8 +209,10 @@ def subscribe_user(user_id):
                 'is_active': True
             }
             supabase.table('subscribers').insert(data).execute()
+            print(f"✅ 新訂閱: {user_id}")
         else:
             supabase.table('subscribers').update({'is_active': True}).eq('user_id', user_id).execute()
+            print(f"✅ 重新訂閱: {user_id}")
         return True
     except Exception as e:
         print(f"訂閱失敗: {e}")
@@ -170,10 +222,20 @@ def unsubscribe_user(user_id):
     if not supabase: return False
     try:
         supabase.table('subscribers').update({'is_active': False}).eq('user_id', user_id).execute()
+        print(f"❌ 取消訂閱: {user_id}")
         return True
     except Exception as e:
         print(f"取消訂閱失敗: {e}")
         return False
+
+def get_subscription_status(user_id):
+    if not supabase: return None
+    try:
+        result = supabase.table('subscribers').select('*').eq('user_id', user_id).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        print(f"查詢訂閱失敗: {e}")
+        return None
 
 # ==================== 每日小知識 ====================
 def get_daily_plant_fact():
@@ -238,7 +300,7 @@ def serve_annotated_image(image_id):
     entry = annotated_image_store.get(image_id)
     if not entry:
         return abort(404)
-    if time.time() - entry["created_at"] > 300:  # 5分鐘過期
+    if time.time() - entry["created_at"] > 300:
         annotated_image_store.pop(image_id, None)
         return abort(404)
     return send_file(
@@ -289,75 +351,76 @@ def handle_follow(event):
 def handle_unfollow(event):
     if supabase: unsubscribe_user(event.source.user_id)
 
-# ==================== 🆕 圖片訊息處理 ====================
+# ==================== 圖片訊息處理 ====================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
     message_id = event.message.id
     
-    # 1. 從LINE下載圖片
-    message_content = line_bot_api.get_message_content(message_id)
-    image_bytes = b''
-    for chunk in message_content.iter_content():
-        image_bytes += chunk
-    
-    # 2. 暫存圖片（給後續分析用）
-    image_temp_store[user_id] = {
-        'data': image_bytes,
-        'timestamp': time.time()
-    }
-    pending_vision[user_id] = True
-    
-    # 3. 提供快速選單
-    quick_reply = QuickReply(
-        items=[
-            QuickReplyButton(
-                action=PostbackAction(
-                    label="🌿 這是什麼植物？",
-                    data=json.dumps({"action": "vision", "type": "identify"}),
-                    display_text="這是什麼植物？"
+    try:
+        # 從LINE下載圖片
+        message_content = line_bot_api.get_message_content(message_id)
+        image_bytes = b''
+        for chunk in message_content.iter_content():
+            image_bytes += chunk
+        
+        # 暫存圖片
+        image_temp_store[user_id] = {
+            'data': image_bytes,
+            'timestamp': time.time()
+        }
+        pending_vision[user_id] = True
+        
+        # 提供快速選單
+        quick_reply = QuickReply(
+            items=[
+                QuickReplyButton(
+                    action=PostbackAction(
+                        label="🌿 這是什麼植物？",
+                        data=json.dumps({"action": "vision", "type": "identify"}),
+                        display_text="這是什麼植物？"
+                    )
+                ),
+                QuickReplyButton(
+                    action=PostbackAction(
+                        label="🔍 檢查病害",
+                        data=json.dumps({"action": "vision", "type": "disease"}),
+                        display_text="這盆植物生病了嗎？"
+                    )
+                ),
+                QuickReplyButton(
+                    action=PostbackAction(
+                        label="💚 健康狀況",
+                        data=json.dumps({"action": "vision", "type": "health"}),
+                        display_text="這棵植物健康嗎？"
+                    )
                 )
-            ),
-            QuickReplyButton(
-                action=PostbackAction(
-                    label="🔍 檢查病害",
-                    data=json.dumps({"action": "vision", "type": "disease"}),
-                    display_text="這盆植物生病了嗎？"
-                )
-            ),
-            QuickReplyButton(
-                action=PostbackAction(
-                    label="💚 健康狀況",
-                    data=json.dumps({"action": "vision", "type": "health"}),
-                    display_text="這棵植物健康嗎？"
-                )
-            ),
-            QuickReplyButton(
-                action=PostbackAction(
-                    label="✂️ 標記葉子",
-                    data=json.dumps({"action": "vision", "type": "annotate"}),
-                    display_text="幫我標記葉子的位置"
-                )
-            )
-        ]
-    )
-    
-    reply_msg = TextSendMessage(
-        text="🌿 收到圖片囉！你想問蕨積什麼？",
-        quick_reply=quick_reply
-    )
-    
-    line_bot_api.reply_message(reply_token, reply_msg)
+            ]
+        )
+        
+        reply_msg = TextSendMessage(
+            text="🌿 收到圖片囉！你想問蕨積什麼？",
+            quick_reply=quick_reply
+        )
+        
+        line_bot_api.reply_message(reply_token, reply_msg)
+        
+    except Exception as e:
+        print(f"處理圖片失敗: {e}")
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="🌿 圖片處理失敗，請再試一次")
+        )
 
-# ==================== 🆕 Postback 處理 ====================
+# ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_message = event.message.text
     reply_token = event.reply_token
     user_id = event.source.user_id
     
-    # ===== 訂閱相關指令 =====
+    # 訂閱相關指令
     if supabase:
         if user_message in ["取消訂閱", "停止推播", "unsubscribe"]:
             unsubscribe_user(user_id)
@@ -367,36 +430,44 @@ def handle_text_message(event):
             subscribe_user(user_id)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！明早8點見"))
             return
+        if user_message in ["訂閱狀態", "查詢訂閱"]:
+            status = get_subscription_status(user_id)
+            if status:
+                active = "✅ 已訂閱" if status.get('is_active') else "❌ 已取消"
+                line_bot_api.reply_message(reply_token, TextSendMessage(text=f"📋 訂閱狀態：{active}"))
+            else:
+                subscribe_user(user_id)
+                line_bot_api.reply_message(reply_token, TextSendMessage(text="🌿 已幫你自動訂閱！"))
+            return
     
-    # ===== 檢查是否在等待圖片分析 =====
+    # 檢查是否在等待圖片分析
     if user_id in pending_vision and pending_vision[user_id]:
-        # 這是一般文字，不是Postback，可能是使用者自己輸入的問題
-        # 我們還是可以分析圖片
         if user_id in image_temp_store:
             image_data = image_temp_store[user_id]['data']
-            
-            # 用Gemini分析圖片 + 使用者的問題
-            analysis = analyze_image_with_gemini(
-                image_data, 
-                prompt=f"{user_message} 請用30字內簡短回答，繁體中文"
-            )
-            
-            # 清除暫存狀態
+            analysis = analyze_image_with_gemini(image_data, prompt=f"{user_message}")
             pending_vision.pop(user_id, None)
             image_temp_store.pop(user_id, None)
-            
             line_bot_api.reply_message(reply_token, TextSendMessage(text=analysis))
             return
     
-    # ===== 一般聊天 =====
+    # 一般聊天
     ai_response = ask_deepseek(user_message)
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
 
+# ==================== Postback 處理 ====================
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
-    postback_data = json.loads(event.postback.data)
+    
+    try:
+        postback_data = json.loads(event.postback.data)
+    except:
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="🌿 指令解析失敗")
+        )
+        return
     
     if postback_data.get('action') == 'vision':
         vision_type = postback_data.get('type')
@@ -415,29 +486,17 @@ def handle_postback(event):
         prompts = {
             'identify': '這是什麼植物？請用20字內簡短回答，繁體中文',
             'disease': '這盆植物生病了嗎？如果有病害請說名稱，沒病就說健康。20字內',
-            'health': '這棵植物健康嗎？簡短評分：良好/普通/不佳，20字內',
-            'annotate': '請標記圖片中的葉子位置，並回傳標註後的圖片'  # 進階功能需用Agentic Vision
+            'health': '這棵植物健康嗎？簡短評分：良好/普通/不佳，20字內'
         }
         
         prompt = prompts.get(vision_type, prompts['identify'])
+        analysis = analyze_image_with_gemini(image_data, prompt)
         
-        # 一般辨識（不回傳圖片）
-        if vision_type != 'annotate':
-            analysis = analyze_image_with_gemini(image_data, prompt)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=analysis))
-            
-            # 清除暫存
-            pending_vision.pop(user_id, None)
-            image_temp_store.pop(user_id, None)
+        # 清除暫存
+        pending_vision.pop(user_id, None)
+        image_temp_store.pop(user_id, None)
         
-        # 標記功能需要回傳圖片（進階功能）
-        else:
-            # 這裡可以擴充Agentic Vision，先回傳簡單訊息
-            analysis = analyze_image_with_gemini(image_data, "請描述這張圖片中葉子的位置和形狀")
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 葉子位置：{analysis}\n\n（標記圖片功能開發中，先給你文字描述）"))
-            
-            pending_vision.pop(user_id, None)
-            image_temp_store.pop(user_id, None)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=analysis))
 
 # ==================== 測試端點 ====================
 @app.route("/test-push", methods=['GET'])
