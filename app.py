@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 智能專業判斷版（隨便問也專業）
+# app.py - 蕨積7.0 智能專業判斷版（含測試路由）
 import os
 import json
 import requests
@@ -79,7 +79,7 @@ def get_weather(city):
             city_name = CITY_MAPPING[city]
         else:
             city_name = city
-        
+
         # 如果沒有API Key，用模擬資料（開發測試用）
         if not os.getenv('CWA_API_KEY'):
             weather_data = {
@@ -89,7 +89,6 @@ def get_weather(city):
                 "台中市": {"status": "晴時多雲", "temp": 27, "rain_prob": 10},
                 "高雄市": {"status": "晴", "temp": 29, "rain_prob": 0}
             }
-            
             if city_name in weather_data:
                 data = weather_data[city_name]
                 return {
@@ -107,19 +106,16 @@ def get_weather(city):
                     "temp": 25,
                     "rain_prob": 30
                 }
-        
+
         # 正式API呼叫（如果有金鑰）
         url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001?Authorization={os.getenv('CWA_API_KEY')}&format=JSON&locationName={city_name}"
         response = requests.get(url, timeout=10)
         data = response.json()
-        
         location = data['records']['location'][0]
         weather_elements = location['weatherElement']
-        
         weather_status = weather_elements[0]['time'][0]['parameter']['parameterName']
         rain_prob = weather_elements[1]['time'][0]['parameter']['parameterName']
         temp = weather_elements[2]['time'][0]['parameter']['parameterName']
-        
         return {
             "success": True,
             "city": city_name,
@@ -127,7 +123,7 @@ def get_weather(city):
             "temp": int(temp),
             "rain_prob": int(rain_prob)
         }
-        
+
     except Exception as e:
         print(f"天氣API錯誤: {e}")
         return {
@@ -139,7 +135,6 @@ def get_watering_advice(weather_data):
     """根據天氣給澆水建議"""
     rain_prob = weather_data.get('rain_prob', 0)
     temp = weather_data.get('temp', 25)
-    
     if rain_prob >= 70:
         return "🌧️ 今天會下雨，戶外植物不用澆水，室內等土乾再澆"
     elif rain_prob >= 40:
@@ -153,40 +148,29 @@ def get_watering_advice(weather_data):
 
 # ==================== 🎯 智能專業判斷核心（權重版）====================
 PROFESSIONAL_WEIGHTS = {
-    # 植物名稱 - 權重高
     "多肉": 3, "龜背芋": 3, "琴葉榕": 3, "虎尾蘭": 3, "仙人掌": 3,
     "蕨類": 3, "觀音蓮": 3, "蔓綠絨": 3, "彩葉芋": 3, "竹芋": 3,
     "發財樹": 3, "幸福樹": 3, "龍血樹": 3, "黃金葛": 3, "吊蘭": 3,
     "常春藤": 3, "薄荷": 3, "迷迭香": 3, "薰衣草": 3, "羅勒": 3,
     "辣椒": 3, "番茄": 3, "草莓": 3, "藍莓": 3,
-    
-    # 問題症狀 - 權重高
     "軟": 2, "黃": 2, "黑": 2, "爛": 2, "枯": 2, "掉": 2, "垂": 2,
     "軟葉": 3, "發黃": 3, "變黃": 3, "黑斑": 3, "爛根": 3,
     "枯萎": 3, "掉葉": 3, "徒長": 3, "化水": 3, "曬傷": 3,
     "斑": 2, "洞": 2, "蟲": 3, "介殼蟲": 3, "紅蜘蛛": 3,
     "蚜蟲": 3, "粉蝨": 3, "黴": 2, "鏽": 2,
-    
-    # 養護動作 - 權重中
     "澆水": 2, "施肥": 2, "換盆": 2, "修剪": 2, "扦插": 2,
     "分株": 2, "播種": 2, "授粉": 2,
     "日照": 1, "光照": 1, "通風": 1, "濕度": 1, "介質": 1,
     "土": 1, "盆": 1, "水": 1,
-    
-    # 專業術語 - 權重中
     "學名": 2, "科屬": 2, "原生地": 2, "休眠期": 2, "生長期": 2,
     "病蟲害": 2, "防治": 2, "治療": 2, "急救": 2, "診斷": 2,
-    
-    # 問句形式 - 權重低
     "怎麼辦": 1, "怎麼救": 1, "為什麼": 1, "正常嗎": 1, "生病嗎": 1,
     "什麼問題": 1, "怎麼了": 1, "如何": 1, "怎樣": 1
 }
 
-# 植物列表（快速比對用）
-PLANT_LIST = ["多肉", "龜背芋", "虎尾蘭", "仙人掌", "蕨類", "發財樹", 
+PLANT_LIST = ["多肉", "龜背芋", "虎尾蘭", "仙人掌", "蕨類", "發財樹",
               "黃金葛", "吊蘭", "薄荷", "迷迭香", "薰衣草"]
 
-# 通用問句（不專業）
 CASUAL_PHRASES = [
     "你好", "嗨", "哈囉", "早安", "午安", "晚安", "吃飯", "吃飽",
     "累了", "無聊", "可愛", "喜歡", "哈哈", "呵呵", "加油", "謝謝",
@@ -195,67 +179,44 @@ CASUAL_PHRASES = [
 ]
 
 def is_professional_question(text):
-    """語意判斷：計算專業權重總分 - 隨便問也專業版"""
     text_lower = text.lower()
-    
-    # 1️⃣ 快速過濾純聊天（短句 + 聊天關鍵字）
-    if len(text) <= 6:  # 例如「你好」、「多肉」這種短句
-        # 如果是植物名稱（權重3）就當專業
+    if len(text) <= 6:
         for plant in PLANT_LIST:
             if plant in text:
                 print(f"🌱 短句植物名觸發專業模式: {text}")
                 return True
         return False
-    
-    # 2️⃣ 檢查是否為純聊天
     for phrase in CASUAL_PHRASES:
         if phrase in text_lower and len(text) < 15:
             return False
-    
-    # 3️⃣ 計算專業權重總分
     total_weight = 0
     matched_keywords = []
     has_plant = False
-    
     for keyword, weight in PROFESSIONAL_WEIGHTS.items():
         if keyword in text:
             total_weight += weight
             matched_keywords.append(f"{keyword}(+{weight})")
-            # 檢查是否包含植物名稱
             if weight >= 3 and keyword in PLANT_LIST:
                 has_plant = True
-    
-    # 除錯用（可以在Render Logs看到）
     if matched_keywords:
         print(f"🔍 命中關鍵字: {', '.join(matched_keywords)} | 總權重: {total_weight}")
-    
-    # 4️⃣ 🎯 智能判斷邏輯
-    # 情況A：包含植物名稱 + 任何症狀（權重>=2）
     if has_plant and total_weight >= 2:
         print(f"✅ 專業模式 triggered (植物+症狀)")
         return True
-    
-    # 情況B：總權重 >= 3
     if total_weight >= 3:
         print(f"✅ 專業模式 triggered (權重總和: {total_weight})")
         return True
-    
-    # 情況C：包含植物名稱 + 問句（權重1也算）
     if has_plant and total_weight >= 1 and any(q in text for q in ["?", "？", "嗎", "呢"]):
         print(f"✅ 專業模式 triggered (植物+問句)")
         return True
-    
-    # 情況D：包含「怎麼」、「如何」+ 任何植物相關關鍵字
     if ("怎麼" in text or "如何" in text) and total_weight >= 1:
         print(f"✅ 專業模式 triggered (疑問詞+關鍵字)")
         return True
-    
     print(f"❌ 賣萌模式 (權重總和: {total_weight})")
     return False
 
 # ==================== 蕨積雙模式人設 ====================
 def get_professional_prompt(user_name=None):
-    """專業模式人設（強制認真版）"""
     name_part = f"用戶叫{user_name}，" if user_name else ""
     return f"""你是「蕨積」，一位專業的植物學家。{name_part}用戶在問專業植物問題。
 
@@ -282,7 +243,6 @@ def get_professional_prompt(user_name=None):
 """
 
 def get_casual_prompt(user_name=None):
-    """一般模式人設（幽默可愛）"""
     name_part = f"用戶叫{user_name}，" if user_name else ""
     return f"""你是「蕨積」，一個幽默風趣的植物好朋友！{name_part}用戶在閒聊或問非專業問題。
 
@@ -297,25 +257,18 @@ def get_casual_prompt(user_name=None):
 蕨積：{f'{user_name}，' if user_name else ''}我也是，光合作用一整天了🌿
 """
 
-# ==================== DeepSeek 呼叫（強制專業模式）====================
 def ask_deepseek(question, user_name=None, is_professional=False):
-    """呼叫DeepSeek，根據模式選擇人設"""
     if not DEEPSEEK_API_KEY:
         return "🌿 蕨積去曬太陽了"
-    
     headers = {
         'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
         'Content-Type': 'application/json'
     }
-    
     if is_professional:
-        # 專業模式：強制指令 + 低溫
         forced_question = f"""【重要】你現在是植物學博士，請用極度專業、冷靜、準確的方式回答。禁止使用任何語氣詞、表情符號。回答必須包含原因、解法、預防。
 
 問題：{question}"""
-        
         system_prompt = get_professional_prompt(user_name)
-        
         data = {
             "model": "deepseek-chat",
             "messages": [
@@ -327,11 +280,8 @@ def ask_deepseek(question, user_name=None, is_professional=False):
             "top_p": 0.1
         }
         print(f"🔬 專業模式 - 問題: {question[:30]}...")
-        
     else:
-        # 賣萌模式
         system_prompt = get_casual_prompt(user_name)
-        
         data = {
             "model": "deepseek-chat",
             "messages": [
@@ -342,7 +292,6 @@ def ask_deepseek(question, user_name=None, is_professional=False):
             "temperature": 0.9
         }
         print(f"😊 賣萌模式 - 問題: {question[:30]}...")
-    
     try:
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
@@ -356,10 +305,8 @@ def ask_deepseek(question, user_name=None, is_professional=False):
 def get_or_create_user(user_id):
     if not supabase:
         return None
-    
     try:
         result = supabase.table('users').select('*').eq('user_id', user_id).execute()
-        
         if result.data:
             return result.data[0]
         else:
@@ -379,7 +326,6 @@ def get_or_create_user(user_id):
 def update_user_name(user_id, name):
     if not supabase:
         return False
-    
     try:
         supabase.table('users').update({'user_name': name}).eq('user_id', user_id).execute()
         return True
@@ -390,7 +336,6 @@ def update_user_name(user_id, name):
 def update_user_city(user_id, city):
     if not supabase:
         return False
-    
     try:
         supabase.table('users').update({'city': city}).eq('user_id', user_id).execute()
         return True
@@ -401,7 +346,6 @@ def update_user_city(user_id, city):
 def update_last_active(user_id):
     if not supabase:
         return
-    
     try:
         supabase.table('users').update({
             'last_active': datetime.now(timezone.utc).isoformat()
@@ -411,7 +355,8 @@ def update_last_active(user_id):
 
 # ==================== 訂閱管理 ====================
 def subscribe_user(user_id):
-    if not supabase: return False
+    if not supabase:
+        return False
     try:
         existing = supabase.table('subscribers').select('*').eq('user_id', user_id).execute()
         if not existing.data:
@@ -432,7 +377,8 @@ def subscribe_user(user_id):
         return False
 
 def unsubscribe_user(user_id):
-    if not supabase: return False
+    if not supabase:
+        return False
     try:
         supabase.table('subscribers').update({'is_active': False}).eq('user_id', user_id).execute()
         print(f"❌ 取消訂閱: {user_id}")
@@ -447,19 +393,16 @@ def get_daily_plant_fact():
 範例：
 「香蕉是莓果，草莓不是。植物界也搞詐欺🍌」
 「蘆薈晚上吐氧氣，比咖啡提神🌵」"""
-    
     headers = {
         'Authorization': f'Bearer {DEEPSEEK_API_KEY}',
         'Content-Type': 'application/json'
     }
-    
     data = {
         "model": "deepseek-chat",
         "messages": [{"role": "user", "content": fact_prompt}],
         "max_tokens": 100,
         "temperature": 0.9
     }
-    
     try:
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
         return response.json()['choices'][0]['message']['content'].strip()
@@ -468,23 +411,32 @@ def get_daily_plant_fact():
 
 # ==================== 推播函數 ====================
 def send_daily_push():
-    if not supabase: return
+    if not supabase:
+        print("❌ Supabase 未設定，無法推播")
+        return
     today = datetime.now(timezone.utc).date().isoformat()
     try:
         subscribers = supabase.table('subscribers').select('*').eq('is_active', True).neq('last_push_date', today).execute()
-        if not subscribers.data: return
+        if not subscribers.data:
+            print("📭 今天沒有需要推播的用戶")
+            return
         fact = get_daily_plant_fact()
+        success_count = 0
         for sub in subscribers.data:
+            user_id = sub['user_id']
             try:
                 line_bot_api.push_message(
-                    sub['user_id'],
+                    user_id,
                     TextSendMessage(text=f"🌱 **蕨積早安**\n\n{fact}")
                 )
-                supabase.table('subscribers').update({'last_push_date': today}).eq('user_id', sub['user_id']).execute()
+                supabase.table('subscribers').update({'last_push_date': today}).eq('user_id', user_id).execute()
+                success_count += 1
+                print(f"✅ 推播成功: {user_id}")
             except Exception as e:
-                print(f"推播失敗: {e}")
+                print(f"❌ 推播失敗 {user_id}: {e}")
+        print(f"📊 推播完成: 成功 {success_count}/{len(subscribers.data)}")
     except Exception as e:
-        print(f"推播處理失敗: {e}")
+        print(f"❌ 推播處理失敗: {e}")
 
 # ==================== 排程器 ====================
 def init_scheduler():
@@ -497,35 +449,10 @@ def init_scheduler():
     return scheduler
 
 # ==================== LINE Webhook ====================
-# ==================== 測試端點 ====================
-@app.route("/test-push", methods=['GET'])
-def test_push():
-    send_daily_push()
-    return {"status": "push triggered"}, 200
-
-# 🔥 新增：手動測試 LINE Push 是否正常
-@app.route("/test-line-push", methods=['GET'])
-def test_line_push():
-    """手動測試 LINE Push 是否正常"""
-    try:
-        # 發送測試訊息給你自己（請確認 USER_ID 正確）
-        line_bot_api.push_message(
-            'Uaa8ad4daa73c549dd400f9ad2ef92217',  # 這裡是你的 LINE User ID
-            TextSendMessage(text="🧪 這是 LINE Push 測試訊息，收到代表 token 有效！")
-        )
-        return {"status": "success", "message": "測試訊息已發送"}, 200
-    except Exception as e:
-        print(f"測試 Push 失敗: {e}")
-        return {"status": "error", "message": str(e)}, 500
-
-@app.route("/", methods=['GET'])
-def health():
-    # ... 原有的健康檢查程式碼 ...
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
     body = request.get_data(as_text=True)
-    
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -536,13 +463,10 @@ def callback():
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
-    
     if supabase:
         get_or_create_user(user_id)
         subscribe_user(user_id)
-    
     welcome_msg = "🌿 蕨積來啦！\n\n跟我說你的名字和城市，這樣我能：\n✅ 叫你名字聊天\n✅ 給你天氣澆水建議\n\n直接說「我叫XXX」或「我在台北」就可以囉！"
-    
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_msg))
 
 @handler.add(UnfollowEvent)
@@ -555,22 +479,15 @@ def handle_unfollow(event):
 def handle_image_message(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
-    
     try:
         reply_text = random.choice(SORRY_MESSAGES)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
-        
         if supabase:
             update_last_active(user_id)
-        
         print(f"📸 用戶 {user_id} 傳了圖片")
-        
     except Exception as e:
         print(f"圖片處理失敗: {e}")
-        line_bot_api.reply_message(
-            reply_token,
-            TextSendMessage(text="🌿 圖片處理失敗，再試一次？")
-        )
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="🌿 圖片處理失敗，再試一次？"))
 
 # ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
@@ -578,16 +495,15 @@ def handle_text_message(event):
     user_message = event.message.text.strip()
     reply_token = event.reply_token
     user_id = event.source.user_id
-    
-    # 取得用戶資料
+
     user_data = None
     user_name = None
     if supabase:
         user_data = get_or_create_user(user_id)
         user_name = user_data.get('user_name') if user_data else None
         update_last_active(user_id)
-    
-    # ===== 訂閱相關指令 =====
+
+    # 訂閱相關指令
     if supabase:
         if user_message in ["取消訂閱", "停止推播", "unsubscribe"]:
             unsubscribe_user(user_id)
@@ -597,20 +513,17 @@ def handle_text_message(event):
             subscribe_user(user_id)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！明早8點見"))
             return
-    
-    # ===== 記住名字功能 =====
+
+    # 記住名字
     name_match = re.match(r"^我叫(.+)$", user_message) or re.match(r"^我是(.+)$", user_message)
     if name_match:
         name = name_match.group(1).strip()
         if name and supabase:
             update_user_name(user_id, name)
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text=f"🌿 哈囉 {name}！我記住你了～")
-            )
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 哈囉 {name}！我記住你了～"))
             return
-    
-    # ===== 設定城市功能 =====
+
+    # 設定城市
     city_match = re.match(r"^我在(.+)$", user_message) or re.match(r"^我住(.+)$", user_message)
     if city_match:
         city = city_match.group(1).strip()
@@ -619,41 +532,31 @@ def handle_text_message(event):
             if c in city:
                 valid_city = c
                 break
-        
         if valid_city and supabase:
             update_user_city(user_id, valid_city)
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text=f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～")
-            )
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～"))
             return
-    
-    # ===== 天氣查詢功能 =====
+
+    # 天氣查詢
     if "天氣" in user_message or "下雨" in user_message or "澆水" in user_message:
         city = None
         for c in CITY_MAPPING.keys():
             if c in user_message:
                 city = c
                 break
-        
         if not city and user_data and user_data.get('city'):
             city = user_data.get('city')
-        
         if city:
             weather = get_weather(city)
             if weather['success']:
                 advice = get_watering_advice(weather)
-                
                 if user_name:
                     reply = f"{user_name}，{city}今天{weather['status']}，{weather['temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 else:
                     reply = f"{city}今天{weather['status']}，{weather['temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
-                
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
-                
                 if user_data and not user_data.get('city') and supabase:
                     update_user_city(user_id, city)
-                
                 return
             else:
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=weather['message']))
@@ -662,15 +565,11 @@ def handle_text_message(event):
             reply = "🌿 你想查哪個城市的天氣？\n直接告訴我城市名稱，例如：\n「台北天氣」\n「台中會下雨嗎」"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
             return
-    
-    # ===== 🎯 核心：智能專業判斷 =====
+
+    # 判斷專業/賣萌
     is_professional = is_professional_question(user_message)
-    
-    # 記錄模式
     mode = "🔬 專業模式" if is_professional else "😊 賣萌模式"
     print(f"📝 用戶 {user_id} | {mode} | 問題: {user_message}")
-    
-    # 呼叫DeepSeek
     ai_response = ask_deepseek(user_message, user_name, is_professional)
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
 
@@ -679,6 +578,21 @@ def handle_text_message(event):
 def test_push():
     send_daily_push()
     return {"status": "push triggered"}, 200
+
+# 🔥 新增：手動測試 LINE Push 是否正常
+@app.route("/test-line-push", methods=['GET'])
+def test_line_push():
+    """手動測試 LINE Push 是否正常"""
+    try:
+        # 發送測試訊息給你自己
+        line_bot_api.push_message(
+            'Uaa8ad4daa73c549dd400f9ad2ef92217',
+            TextSendMessage(text="🧪 這是 LINE Push 測試訊息，收到代表 token 有效！")
+        )
+        return {"status": "success", "message": "測試訊息已發送"}, 200
+    except Exception as e:
+        print(f"測試 Push 失敗: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 @app.route("/", methods=['GET'])
 def health():
@@ -692,6 +606,5 @@ if __name__ == "__main__":
         scheduler = init_scheduler()
     except Exception as e:
         print(f"❌ 排程器啟動失敗: {e}")
-    
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
