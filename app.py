@@ -497,6 +497,30 @@ def init_scheduler():
     return scheduler
 
 # ==================== LINE Webhook ====================
+# ==================== 測試端點 ====================
+@app.route("/test-push", methods=['GET'])
+def test_push():
+    send_daily_push()
+    return {"status": "push triggered"}, 200
+
+# 🔥 新增：手動測試 LINE Push 是否正常
+@app.route("/test-line-push", methods=['GET'])
+def test_line_push():
+    """手動測試 LINE Push 是否正常"""
+    try:
+        # 發送測試訊息給你自己（請確認 USER_ID 正確）
+        line_bot_api.push_message(
+            'Uaa8ad4daa73c549dd400f9ad2ef92217',  # 這裡是你的 LINE User ID
+            TextSendMessage(text="🧪 這是 LINE Push 測試訊息，收到代表 token 有效！")
+        )
+        return {"status": "success", "message": "測試訊息已發送"}, 200
+    except Exception as e:
+        print(f"測試 Push 失敗: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/", methods=['GET'])
+def health():
+    # ... 原有的健康檢查程式碼 ...
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
