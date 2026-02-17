@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 完整版（天氣索引已修正）
+# app.py - 蕨積7.0 完整版（每日推播附加天氣）
 import os
 import json
 import requests
@@ -87,7 +87,6 @@ def get_weather(city):
 
     try:
         print(f"🔍 正在查詢天氣: {city_name}")
-        # 加入 verify=False 跳過 SSL 憑證驗證
         response = requests.get(url, timeout=10, verify=False)
         response.raise_for_status()
         data = response.json()
@@ -381,7 +380,7 @@ def get_daily_plant_fact():
         print(f"AI知識失敗，改用內建庫: {e}")
         return local_choice
 
-# ==================== 推播函數 ====================
+# ==================== 推播函數（含天氣資訊）====================
 def send_daily_push():
     if not supabase:
         print("❌ Supabase未連線，無法推播")
@@ -389,6 +388,7 @@ def send_daily_push():
     today = datetime.now(timezone.utc).date().isoformat()
     print(f"🔍 今天的日期 (UTC): {today}")
     try:
+        # 取得所有活躍訂閱用戶
         response = supabase.table('subscribers').select('*').eq('is_active', True).execute()
         all_active = response.data
         print(f"🔍 所有活躍用戶: {all_active}")
@@ -397,20 +397,47 @@ def send_daily_push():
         if not subscribers:
             print("📭 今天沒有需要推播的用戶")
             return
+
+        # 產生今日小知識（所有用戶共用同一則）
         daily_fact = get_daily_plant_fact()
         print(f"🌱 今日知識: {daily_fact}")
+
         success_count = 0
         for sub in subscribers:
             user_id = sub['user_id']
             last_push = sub.get('last_push_date')
             print(f"👉 準備推播給 {user_id} (last_push_date={last_push})")
+
+            # 查詢該用戶儲存的城市（如果有）
+            city = None
             try:
-                line_bot_api.push_message(user_id, TextSendMessage(text=f"🌱 **蕨積早安**\n\n{daily_fact}"))
+                user_res = supabase.table('users').select('city').eq('user_id', user_id).execute()
+                if user_res.data and user_res.data[0].get('city'):
+                    city = user_res.data[0]['city']
+            except Exception as e:
+                print(f"查詢用戶 {user_id} 城市失敗: {e}")
+
+            # 若有城市則附加天氣資訊
+            weather_text = ""
+            if city:
+                weather = get_weather(city)
+                if weather['success']:
+                    weather_text = f"\n\n今日天氣（{weather['city']}）：{weather['status']}，最高{weather['max_temp']}°C，最低{weather['min_temp']}°C，降雨機率{weather['rain_prob']}%"
+                else:
+                    # 天氣查詢失敗可忽略或記錄日誌
+                    print(f"獲取 {city} 天氣失敗: {weather.get('message')}")
+
+            # 組合完整訊息
+            message_text = f"🌱 **蕨積早安**\n\n{daily_fact}{weather_text}"
+
+            try:
+                line_bot_api.push_message(user_id, TextSendMessage(text=message_text))
                 update_result = supabase.table('subscribers').update({'last_push_date': today}).eq('user_id', user_id).execute()
                 print(f"✅ 推播成功，已更新 last_push_date: {update_result.data}")
                 success_count += 1
             except Exception as e:
                 print(f"❌ 推播失敗 {user_id}: {e}")
+
         print(f"📊 推播完成：成功 {success_count} / 總共 {len(subscribers)}")
     except Exception as e:
         print(f"❌ 推播處理時發生例外: {e}")
@@ -570,7 +597,7 @@ def test_line_push():
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中"
-    return f"🌿 蕨積7.0 完整版（天氣已修正） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
+    return f"🌿 蕨積7.0 完整版（推播含天氣） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
