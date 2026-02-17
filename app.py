@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 完整版（含即時天氣查詢，SSL 驗證已繞過）
+# app.py - 蕨積7.0 完整版（天氣索引已修正）
 import os
 import json
 import requests
@@ -77,7 +77,7 @@ CITY_MAPPING = {
 }
 
 def get_weather(city):
-    """從中央氣象署API取得即時天氣資料（暫時關閉 SSL 驗證）"""
+    """從中央氣象署API取得即時天氣資料（修正索引版）"""
     if not CWA_API_KEY:
         return {"success": False, "message": "❌ 未設定氣象API金鑰，請在環境變數中加入 CWA_API_KEY"}
 
@@ -99,19 +99,26 @@ def get_weather(city):
         location = data['records']['location'][0]
         weather_elements = location['weatherElement']
 
-        # 解析天氣要素（索引請參考 API 文件，此為預設順序）
+        # 根據實際API順序修正索引
+        # 索引0: Wx, 索引1: PoP, 索引2: MinT, 索引3: CI, 索引4: MaxT
         weather_status = weather_elements[0]['time'][0]['parameter']['parameterName']
-        max_temp = weather_elements[1]['time'][0]['parameter']['parameterName']
+        rain_prob = weather_elements[1]['time'][0]['parameter']['parameterName']
         min_temp = weather_elements[2]['time'][0]['parameter']['parameterName']
-        rain_prob = weather_elements[4]['time'][0]['parameter']['parameterName']
+        max_temp = weather_elements[4]['time'][0]['parameter']['parameterName']
+
+        def safe_int(val):
+            try:
+                return int(float(val))
+            except:
+                return 0
 
         return {
             "success": True,
             "city": location['locationName'],
             "status": weather_status,
-            "max_temp": int(max_temp),
-            "min_temp": int(min_temp),
-            "rain_prob": int(rain_prob)
+            "max_temp": safe_int(max_temp),
+            "min_temp": safe_int(min_temp),
+            "rain_prob": safe_int(rain_prob)
         }
 
     except requests.exceptions.RequestException as e:
@@ -127,7 +134,7 @@ def get_weather(city):
 def get_watering_advice(weather_data):
     """根據天氣給澆水建議（使用最高溫作為參考溫度）"""
     rain_prob = weather_data.get('rain_prob', 0)
-    temp = weather_data.get('max_temp', 25)   # 用最高溫作為溫度參考
+    temp = weather_data.get('max_temp', 25)
 
     if rain_prob >= 70:
         return "🌧️ 今天會下雨，戶外植物不用澆水，室內等土乾再澆"
@@ -563,7 +570,7 @@ def test_line_push():
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中"
-    return f"🌿 蕨積7.0 完整版 | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
+    return f"🌿 蕨積7.0 完整版（天氣已修正） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
