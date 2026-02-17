@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 智能專業判斷版（每日知識混合隨機）
+# app.py - 蕨積7.0 完整版（含即時天氣查詢）
 import os
 import json
 import requests
@@ -29,6 +29,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
+CWA_API_KEY = os.getenv('CWA_API_KEY')          # 中央氣象署授權碼
 
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -62,54 +63,70 @@ SORRY_MESSAGES = [
     "🌿 葉子遮到眼睛了，看不到啦！"
 ]
 
-# ==================== 天氣API設定 ====================
+# ==================== 天氣API設定（城市對照表）====================
 CITY_MAPPING = {
-    "基隆": "基隆市", "台北": "臺北市", "新北": "新北市", "桃園": "桃園市",
-    "新竹": "新竹市", "新竹縣": "新竹縣", "苗栗": "苗栗縣", "台中": "臺中市",
-    "彰化": "彰化縣", "南投": "南投縣", "雲林": "雲林縣", "嘉義": "嘉義市",
-    "嘉義縣": "嘉義縣", "台南": "臺南市", "高雄": "高雄市", "屏東": "屏東縣",
-    "宜蘭": "宜蘭縣", "花蓮": "花蓮縣", "台東": "臺東縣", "澎湖": "澎湖縣",
-    "金門": "金門縣", "連江": "連江縣"
+    "基隆": "基隆市", "台北": "臺北市", "新北": "新北市", "板橋": "新北市", "永和": "新北市",
+    "桃園": "桃園市", "中壢": "桃園市", "新竹": "新竹市", "竹北": "新竹縣", "苗栗": "苗栗縣",
+    "台中": "臺中市", "豐原": "臺中市", "彰化": "彰化縣", "南投": "南投縣", "雲林": "雲林縣",
+    "嘉義": "嘉義市", "民雄": "嘉義縣", "台南": "臺南市", "永康": "臺南市", "高雄": "高雄市",
+    "鳳山": "高雄市", "屏東": "屏東縣", "宜蘭": "宜蘭縣", "羅東": "宜蘭縣", "花蓮": "花蓮縣",
+    "台東": "臺東縣", "澎湖": "澎湖縣", "金門": "金門縣", "連江": "連江縣"
 }
 
 def get_weather(city):
-    """從中央氣象局API取得天氣資料"""
+    """從中央氣象署API取得即時天氣資料"""
+    if not CWA_API_KEY:
+        return {"success": False, "message": "❌ 未設定氣象API金鑰，請在環境變數中加入 CWA_API_KEY"}
+
+    # 城市名稱正規化
+    city_name = CITY_MAPPING.get(city, city)   # 若對照表沒有，直接用原始輸入
+
+    dataset_id = 'F-C0032-001'   # 一般天氣預報-今明36小時
+    url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/{dataset_id}?Authorization={CWA_API_KEY}&format=JSON&locationName={city_name}"
+
     try:
-        if city in CITY_MAPPING:
-            city_name = CITY_MAPPING[city]
-        else:
-            city_name = city
-        
-        if not os.getenv('CWA_API_KEY'):
-            weather_data = {
-                "臺北市": {"status": "多雲時晴", "temp": 25, "rain_prob": 20},
-                "新北市": {"status": "陰短暫雨", "temp": 23, "rain_prob": 60},
-                "桃園市": {"status": "多雲", "temp": 24, "rain_prob": 30},
-                "台中市": {"status": "晴時多雲", "temp": 27, "rain_prob": 10},
-                "高雄市": {"status": "晴", "temp": 29, "rain_prob": 0}
-            }
-            if city_name in weather_data:
-                data = weather_data[city_name]
-                return {"success": True, "city": city_name, "status": data["status"], "temp": data["temp"], "rain_prob": data["rain_prob"]}
-            else:
-                return {"success": True, "city": city_name, "status": "多雲時晴", "temp": 25, "rain_prob": 30}
-        
-        url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001?Authorization={os.getenv('CWA_API_KEY')}&format=JSON&locationName={city_name}"
+        print(f"🔍 正在查詢天氣: {city_name}")
         response = requests.get(url, timeout=10)
+        response.raise_for_status()
         data = response.json()
+
+        if 'records' not in data:
+            print(f"⚠️ API回傳格式異常: {data}")
+            return {"success": False, "message": "天氣資料格式異常，請稍後再試"}
+
         location = data['records']['location'][0]
         weather_elements = location['weatherElement']
+
+        # 解析天氣要素（索引請參考 API 文件，此為預設順序）
         weather_status = weather_elements[0]['time'][0]['parameter']['parameterName']
-        rain_prob = weather_elements[1]['time'][0]['parameter']['parameterName']
-        temp = weather_elements[2]['time'][0]['parameter']['parameterName']
-        return {"success": True, "city": city_name, "status": weather_status, "temp": int(temp), "rain_prob": int(rain_prob)}
+        max_temp = weather_elements[1]['time'][0]['parameter']['parameterName']
+        min_temp = weather_elements[2]['time'][0]['parameter']['parameterName']
+        rain_prob = weather_elements[4]['time'][0]['parameter']['parameterName']
+
+        return {
+            "success": True,
+            "city": location['locationName'],
+            "status": weather_status,
+            "max_temp": int(max_temp),
+            "min_temp": int(min_temp),
+            "rain_prob": int(rain_prob)
+        }
+
+    except requests.exceptions.RequestException as e:
+        print(f"天氣API網路錯誤: {e}")
+        return {"success": False, "message": "無法連接到氣象服務，請稍後再試"}
+    except (KeyError, IndexError, ValueError) as e:
+        print(f"天氣資料解析錯誤: {e}")
+        return {"success": False, "message": "取得的天氣資料無法解析，可能暫時不支援該地區"}
     except Exception as e:
-        print(f"天氣API錯誤: {e}")
-        return {"success": False, "message": "天氣查詢失敗，可能是城市名稱不對喔"}
+        print(f"天氣API未預期錯誤: {e}")
+        return {"success": False, "message": "查詢天氣時發生未知錯誤"}
 
 def get_watering_advice(weather_data):
+    """根據天氣給澆水建議（使用最高溫作為參考溫度）"""
     rain_prob = weather_data.get('rain_prob', 0)
-    temp = weather_data.get('temp', 25)
+    temp = weather_data.get('max_temp', 25)   # 用最高溫作為溫度參考
+
     if rain_prob >= 70:
         return "🌧️ 今天會下雨，戶外植物不用澆水，室內等土乾再澆"
     elif rain_prob >= 40:
@@ -121,7 +138,7 @@ def get_watering_advice(weather_data):
     else:
         return "🌿 天氣不錯，正常澆水就好"
 
-# ==================== 智能專業判斷核心（權重版）====================
+# ==================== 專業/賣萌判斷核心（權重版）====================
 PROFESSIONAL_WEIGHTS = {
     "多肉": 3, "龜背芋": 3, "琴葉榕": 3, "虎尾蘭": 3, "仙人掌": 3,
     "蕨類": 3, "觀音蓮": 3, "蔓綠絨": 3, "彩葉芋": 3, "竹芋": 3,
@@ -316,7 +333,6 @@ def unsubscribe_user(user_id):
 
 # ==================== 每日植物小知識（混合隨機版）====================
 def get_daily_plant_fact():
-    """每日植物小知識：混合內建知識庫與AI隨機產生，確保每天不一樣"""
     local_facts = [
         "🌵 仙人掌的刺其實是變態葉，用來減少水分蒸發！",
         "🍌 香蕉是莓果，草莓反而不是，植物界也搞詐欺！",
@@ -336,7 +352,6 @@ def get_daily_plant_fact():
     ]
     import random
     local_choice = random.choice(local_facts)
-    
     try:
         headers = {'Authorization': f'Bearer {DEEPSEEK_API_KEY}', 'Content-Type': 'application/json'}
         fact_prompt = """請給一則「20字內」的搞笑植物知識，要讓人會心一笑。
@@ -344,17 +359,11 @@ def get_daily_plant_fact():
 「香蕉是莓果，草莓不是」
 「蘆薈晚上吐氧氣」
 「含羞草不是害羞」"""
-        data = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": fact_prompt}],
-            "max_tokens": 100,
-            "temperature": 0.9
-        }
+        data = {"model": "deepseek-chat", "messages": [{"role": "user", "content": fact_prompt}], "max_tokens": 100, "temperature": 0.9}
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
         ai_fact = response.json()['choices'][0]['message']['content'].strip()
         if len(ai_fact) > 50:
             ai_fact = ai_fact[:50] + "…"
-        # 70%機率用AI的，30%用內建庫，增加新鮮感同時保證穩定
         if random.random() < 0.7:
             return ai_fact
         else:
@@ -460,7 +469,8 @@ def handle_text_message(event):
         user_data = get_or_create_user(user_id)
         user_name = user_data.get('user_name') if user_data else None
         update_last_active(user_id)
-    # 訂閱相關指令
+
+    # ===== 訂閱相關指令 =====
     if supabase:
         if user_message in ["取消訂閱", "停止推播", "unsubscribe"]:
             unsubscribe_user(user_id)
@@ -470,7 +480,8 @@ def handle_text_message(event):
             subscribe_user(user_id)
             line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！明早8點見"))
             return
-    # 記住名字
+
+    # ===== 記住名字功能 =====
     name_match = re.match(r"^我叫(.+)$", user_message) or re.match(r"^我是(.+)$", user_message)
     if name_match:
         name = name_match.group(1).strip()
@@ -478,7 +489,8 @@ def handle_text_message(event):
             update_user_name(user_id, name)
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 哈囉 {name}！我記住你了～"))
             return
-    # 設定城市
+
+    # ===== 設定城市功能 =====
     city_match = re.match(r"^我在(.+)$", user_message) or re.match(r"^我住(.+)$", user_message)
     if city_match:
         city = city_match.group(1).strip()
@@ -491,7 +503,8 @@ def handle_text_message(event):
             update_user_city(user_id, valid_city)
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～"))
             return
-    # 天氣查詢
+
+    # ===== 天氣查詢功能 =====
     if "天氣" in user_message or "下雨" in user_message or "澆水" in user_message:
         city = None
         for c in CITY_MAPPING.keys():
@@ -500,15 +513,17 @@ def handle_text_message(event):
                 break
         if not city and user_data and user_data.get('city'):
             city = user_data.get('city')
+
         if city:
             weather = get_weather(city)
             if weather['success']:
                 advice = get_watering_advice(weather)
                 if user_name:
-                    reply = f"{user_name}，{city}今天{weather['status']}，{weather['temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
+                    reply = f"{user_name}，{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 else:
-                    reply = f"{city}今天{weather['status']}，{weather['temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
+                    reply = f"{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+                # 如果用戶還沒儲存城市，自動儲存
                 if user_data and not user_data.get('city') and supabase:
                     update_user_city(user_id, city)
                 return
@@ -519,7 +534,8 @@ def handle_text_message(event):
             reply = "🌿 你想查哪個城市的天氣？\n直接告訴我城市名稱，例如：\n「台北天氣」\n「台中會下雨嗎」"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
             return
-    # 專業判斷
+
+    # ===== 核心：智能專業判斷 =====
     is_professional = is_professional_question(user_message)
     mode = "🔬 專業模式" if is_professional else "😊 賣萌模式"
     print(f"📝 用戶 {user_id} | {mode} | 問題: {user_message}")
@@ -545,7 +561,7 @@ def test_line_push():
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中"
-    return f"🌿 蕨積7.0 智能專業版 | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
+    return f"🌿 蕨積7.0 完整版 | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
