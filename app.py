@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 完整版（含即時天氣查詢）
+# app.py - 蕨積7.0 完整版（含即時天氣查詢，SSL 驗證已繞過）
 import os
 import json
 import requests
@@ -20,6 +20,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
 import atexit
+import urllib3
+# 抑制因關閉 SSL 驗證而產生的 InsecureRequestWarning 警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
 
@@ -74,19 +77,18 @@ CITY_MAPPING = {
 }
 
 def get_weather(city):
-    """從中央氣象署API取得即時天氣資料"""
+    """從中央氣象署API取得即時天氣資料（暫時關閉 SSL 驗證）"""
     if not CWA_API_KEY:
         return {"success": False, "message": "❌ 未設定氣象API金鑰，請在環境變數中加入 CWA_API_KEY"}
 
-    # 城市名稱正規化
-    city_name = CITY_MAPPING.get(city, city)   # 若對照表沒有，直接用原始輸入
-
+    city_name = CITY_MAPPING.get(city, city)
     dataset_id = 'F-C0032-001'   # 一般天氣預報-今明36小時
     url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/{dataset_id}?Authorization={CWA_API_KEY}&format=JSON&locationName={city_name}"
 
     try:
         print(f"🔍 正在查詢天氣: {city_name}")
-        response = requests.get(url, timeout=10)
+        # 加入 verify=False 跳過 SSL 憑證驗證
+        response = requests.get(url, timeout=10, verify=False)
         response.raise_for_status()
         data = response.json()
 
