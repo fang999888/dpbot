@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 完整版（每日推播附加天氣）
+# app.py - 蕨積7.0 完整版（推播附加天氣，未設定城市預設桃園）
 import os
 import json
 import requests
@@ -339,8 +339,11 @@ def unsubscribe_user(user_id):
         print(f"取消訂閱失敗: {e}")
         return False
 
-# ==================== 每日植物小知識（混合隨機版）====================
+# ==================== 每日植物小知識（混合隨機且不重複）====================
+_last_fact = None
+
 def get_daily_plant_fact():
+    global _last_fact
     local_facts = [
         "🌵 仙人掌的刺其實是變態葉，用來減少水分蒸發！",
         "🍌 香蕉是莓果，草莓反而不是，植物界也搞詐欺！",
@@ -359,7 +362,13 @@ def get_daily_plant_fact():
         "🍂 楓葉變紅是因為秋天葉綠素分解，留下花青素。"
     ]
     import random
+    # 確保本地選項不與上次相同（最多嘗試5次）
     local_choice = random.choice(local_facts)
+    attempts = 0
+    while local_choice == _last_fact and attempts < 5:
+        local_choice = random.choice(local_facts)
+        attempts += 1
+
     try:
         headers = {'Authorization': f'Bearer {DEEPSEEK_API_KEY}', 'Content-Type': 'application/json'}
         fact_prompt = """請給一則「20字內」的搞笑植物知識，要讓人會心一笑。
@@ -372,15 +381,19 @@ def get_daily_plant_fact():
         ai_fact = response.json()['choices'][0]['message']['content'].strip()
         if len(ai_fact) > 50:
             ai_fact = ai_fact[:50] + "…"
+        # 決定使用 AI 還是本地（70% AI）
         if random.random() < 0.7:
+            _last_fact = ai_fact
             return ai_fact
         else:
+            _last_fact = local_choice
             return local_choice
     except Exception as e:
         print(f"AI知識失敗，改用內建庫: {e}")
+        _last_fact = local_choice
         return local_choice
 
-# ==================== 推播函數（含天氣資訊）====================
+# ==================== 推播函數（含天氣資訊，未設定城市預設桃園）====================
 def send_daily_push():
     if not supabase:
         print("❌ Supabase未連線，無法推播")
@@ -414,18 +427,25 @@ def send_daily_push():
                 user_res = supabase.table('users').select('city').eq('user_id', user_id).execute()
                 if user_res.data and user_res.data[0].get('city'):
                     city = user_res.data[0]['city']
+                    print(f"📍 用戶 {user_id} 儲存的城市: {city}")
+                else:
+                    # 用戶未設定城市，預設為桃園
+                    city = "桃園"
+                    print(f"📍 用戶 {user_id} 未設定城市，使用預設城市: 桃園")
             except Exception as e:
-                print(f"查詢用戶 {user_id} 城市失敗: {e}")
+                print(f"❌ 查詢用戶 {user_id} 城市失敗: {e}")
+                # 查詢失敗時也預設桃園
+                city = "桃園"
 
-            # 若有城市則附加天氣資訊
+            # 若有城市則附加天氣資訊（city 此時一定有值）
             weather_text = ""
             if city:
                 weather = get_weather(city)
                 if weather['success']:
                     weather_text = f"\n\n今日天氣（{weather['city']}）：{weather['status']}，最高{weather['max_temp']}°C，最低{weather['min_temp']}°C，降雨機率{weather['rain_prob']}%"
+                    print(f"✅ 成功獲取 {city} 天氣")
                 else:
-                    # 天氣查詢失敗可忽略或記錄日誌
-                    print(f"獲取 {city} 天氣失敗: {weather.get('message')}")
+                    print(f"❌ 獲取 {city} 天氣失敗: {weather.get('message')}")
 
             # 組合完整訊息
             message_text = f"🌱 **蕨積早安**\n\n{daily_fact}{weather_text}"
@@ -597,7 +617,7 @@ def test_line_push():
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中"
-    return f"🌿 蕨積7.0 完整版（推播含天氣） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
+    return f"🌿 蕨積7.0 完整版（推播含天氣，預設桃園） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
