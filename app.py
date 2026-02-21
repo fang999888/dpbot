@@ -37,7 +37,7 @@ DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 CWA_API_KEY = os.getenv('CWA_API_KEY')          # 中央氣象署授權碼
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')    # 👈 新增 Gemini 金鑰
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')    # Gemini 金鑰
 
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -53,33 +53,15 @@ else:
 # DeepSeek
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
-# 👇 Gemini 初始化
+# Gemini 初始化
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    print("📋 可用模型清單（支援 generateContent）：")
-    try:
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                print(f" - {m.name}")
-    except Exception as e:
-        print(f"❌ 無法取得模型清單: {e}")
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash')  # 保持原設定
-    genai.configure(api_key=GEMINI_API_KEY)
-    gemini_model = genai.GenerativeModel('gemini-1.5-flash')  # 可改用 'gemini-1.5-pro'
+    # 使用從日誌中確認可用的模型名稱
+    gemini_model = genai.GenerativeModel('models/gemini-2.5-flash')  # 根據您的清單調整
     print("✅ Gemini 初始化成功")
 else:
     gemini_model = None
     print("⚠️ 未設定 GEMINI_API_KEY，圖片識別功能將無法使用")
-    # ==================== 除錯：列出可用 Gemini 模型 ====================
-if GEMINI_API_KEY and gemini_model:
-    try:
-        print("🔍 正在查詢可用的 Gemini 模型（支援 generateContent）：")
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                print(f"   - {m.name}")
-    except Exception as e:
-        print(f"❌ 無法取得模型清單：{e}")
-# ================================================================
 
 # ==================== 圖片暫存區 ====================
 image_temp_store = {}
@@ -531,13 +513,13 @@ def handle_unfollow(event):
     if supabase:
         unsubscribe_user(event.source.user_id)
 
-# ==================== 圖片訊息處理（改寫為使用 Gemini）====================
+# ==================== 圖片訊息處理（使用 Gemini 辨識，失敗時回賣萌）====================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
 
-    # 如果沒有 Gemini 金鑰，維持原來的賣萌回覆
+    # 如果沒有 Gemini 金鑰，直接使用賣萌回覆
     if not gemini_model:
         reply_text = random.choice(SORRY_MESSAGES)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
@@ -557,24 +539,28 @@ def handle_image_message(event):
         # 3. 呼叫 Gemini Vision API
         response = gemini_model.generate_content([
             prompt,
-            {"mime_type": "image/jpeg", "data": image_bytes}  # 假設圖片為 JPEG
+            {"mime_type": "image/jpeg", "data": image_bytes}
         ])
 
-        # 4. 處理回覆
-        if response and response.text:
+        # 4. 檢查回覆內容是否有效（避免空或過短）
+        if response and response.text and len(response.text.strip()) > 5:
             reply_text = response.text.strip()
+            print(f"✅ Gemini 辨識成功，回覆長度: {len(reply_text)}")
         else:
-            reply_text = "🌿 我看不清楚這張圖，能再傳一次嗎？"
+            # 若回覆內容過短或為空，視為無法辨識，改用賣萌回覆
+            print("⚠️ Gemini 回覆內容過短或為空，改用賣萌回覆")
+            reply_text = random.choice(SORRY_MESSAGES)
 
     except Exception as e:
-        print(f"圖片處理失敗: {e}")
-        reply_text = "🌿 圖片處理時發生錯誤，請稍後再試。"
+        print(f"❌ 圖片處理發生例外: {e}")
+        # 任何錯誤都改用賣萌回覆
+        reply_text = random.choice(SORRY_MESSAGES)
 
     # 5. 回覆用戶
     line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
     if supabase:
         update_last_active(user_id)
-    print(f"📸 用戶 {user_id} 圖片已處理")
+    print(f"📸 用戶 {user_id} 圖片處理完成，回覆: {reply_text[:30]}...")
 
 # ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
