@@ -70,6 +70,16 @@ if GEMINI_API_KEY:
 else:
     gemini_model = None
     print("⚠️ 未設定 GEMINI_API_KEY，圖片識別功能將無法使用")
+    # ==================== 除錯：列出可用 Gemini 模型 ====================
+if GEMINI_API_KEY and gemini_model:
+    try:
+        print("🔍 正在查詢可用的 Gemini 模型（支援 generateContent）：")
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                print(f"   - {m.name}")
+    except Exception as e:
+        print(f"❌ 無法取得模型清單：{e}")
+# ================================================================
 
 # ==================== 圖片暫存區 ====================
 image_temp_store = {}
