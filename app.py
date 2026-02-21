@@ -21,6 +21,10 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 import atexit
 import urllib3
+
+# 👇 新增：導入 Gemini
+import google.generativeai as genai
+
 # 抑制因關閉 SSL 驗證而產生的 InsecureRequestWarning 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -33,6 +37,7 @@ DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 CWA_API_KEY = os.getenv('CWA_API_KEY')          # 中央氣象署授權碼
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')    # 👈 新增 Gemini 金鑰
 
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -47,6 +52,15 @@ else:
 
 # DeepSeek
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+# 👇 Gemini 初始化
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')  # 可改用 'gemini-1.5-pro'
+    print("✅ Gemini 初始化成功")
+else:
+    gemini_model = None
+    print("⚠️ 未設定 GEMINI_API_KEY，圖片識別功能將無法使用")
 
 # ==================== 圖片暫存區 ====================
 image_temp_store = {}
@@ -498,20 +512,50 @@ def handle_unfollow(event):
     if supabase:
         unsubscribe_user(event.source.user_id)
 
-# ==================== 圖片訊息處理 ====================
+# ==================== 圖片訊息處理（改寫為使用 Gemini）====================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
-    try:
+
+    # 如果沒有 Gemini 金鑰，維持原來的賣萌回覆
+    if not gemini_model:
         reply_text = random.choice(SORRY_MESSAGES)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
-        if supabase:
-            update_last_active(user_id)
-        print(f"📸 用戶 {user_id} 傳了圖片")
+        print(f"📸 用戶 {user_id} 傳了圖片（無 Gemini 金鑰，使用預設回覆）")
+        return
+
+    try:
+        # 1. 從 LINE 取得圖片內容（二進制）
+        message_content = line_bot_api.get_message_content(event.message.id)
+        image_bytes = b''
+        for chunk in message_content.iter_content():
+            image_bytes += chunk
+
+        # 2. 準備傳送給 Gemini 的提示詞
+        prompt = "你是一個植物專家。請仔細觀察這張圖片，如果圖中有植物，請說明它的種類、健康狀況、可能的問題；如果沒有植物，請簡單描述圖片內容，並用輕鬆的方式回應。請用繁體中文回答。"
+
+        # 3. 呼叫 Gemini Vision API
+        response = gemini_model.generate_content([
+            prompt,
+            {"mime_type": "image/jpeg", "data": image_bytes}  # 假設圖片為 JPEG
+        ])
+
+        # 4. 處理回覆
+        if response and response.text:
+            reply_text = response.text.strip()
+        else:
+            reply_text = "🌿 我看不清楚這張圖，能再傳一次嗎？"
+
     except Exception as e:
         print(f"圖片處理失敗: {e}")
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="🌿 圖片處理失敗，再試一次？"))
+        reply_text = "🌿 圖片處理時發生錯誤，請稍後再試。"
+
+    # 5. 回覆用戶
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+    if supabase:
+        update_last_active(user_id)
+    print(f"📸 用戶 {user_id} 圖片已處理")
 
 # ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
@@ -617,7 +661,8 @@ def test_line_push():
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中"
-    return f"🌿 蕨積7.0 完整版（推播含天氣，預設桃園） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
+    gemini_status = "✅ 已啟用" if gemini_model else "⚠️ 未設定"
+    return f"🌿 蕨積7.0 完整版（推播含天氣，預設桃園） | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
