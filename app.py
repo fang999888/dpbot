@@ -56,6 +56,15 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 # 👇 Gemini 初始化
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+    print("📋 可用模型清單（支援 generateContent）：")
+    try:
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                print(f" - {m.name}")
+    except Exception as e:
+        print(f"❌ 無法取得模型清單: {e}")
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')  # 保持原設定
+    genai.configure(api_key=GEMINI_API_KEY)
     gemini_model = genai.GenerativeModel('gemini-1.5-flash')  # 可改用 'gemini-1.5-pro'
     print("✅ Gemini 初始化成功")
 else:
