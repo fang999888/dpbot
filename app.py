@@ -563,17 +563,52 @@ def handle_image_message(event):
     print(f"📸 用戶 {user_id} 圖片處理完成，回覆: {reply_text[:30]}...")
 
 # ==================== 文字訊息處理 ====================
-@handler.add(MessageEvent, message=TextMessage)
-def handle_text_message(event):
-    user_message = event.message.text.strip()
-    reply_token = event.reply_token
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image_message(event):
     user_id = event.source.user_id
-    user_data = None
-    user_name = None
+    reply_token = event.reply_token
+
+    if not gemini_model:
+        reply_text = random.choice(SORRY_MESSAGES)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+        print(f"📸 用戶 {user_id} 傳了圖片（無 Gemini 金鑰，使用預設回覆）")
+        return
+
+    try:
+        message_content = line_bot_api.get_message_content(event.message.id)
+        image_bytes = b''
+        for chunk in message_content.iter_content():
+            image_bytes += chunk
+
+        # 修改提示詞，明確要求簡短回覆
+        prompt = "你是一個植物專家。請用30-50字簡短描述這張圖片的植物種類、健康狀況或有趣之處。若無植物則簡單描述。請用繁體中文。"
+
+        # 設定生成參數：限制輸出字數（約30-50中文字，對應 token 數）
+        generation_config = {
+            "max_output_tokens": 100,      # 約可產生 50 個中文字
+            "temperature": 0.2,             # 稍低溫度讓回覆更穩定
+        }
+
+        response = gemini_model.generate_content(
+            [prompt, {"mime_type": "image/jpeg", "data": image_bytes}],
+            generation_config=generation_config
+        )
+
+        if response and response.text and len(response.text.strip()) > 5:
+            reply_text = response.text.strip()
+            print(f"✅ Gemini 辨識成功，回覆: {reply_text}")
+        else:
+            print("⚠️ Gemini 回覆內容過短或為空，改用賣萌回覆")
+            reply_text = random.choice(SORRY_MESSAGES)
+
+    except Exception as e:
+        print(f"❌ 圖片處理發生例外: {e}")
+        reply_text = random.choice(SORRY_MESSAGES)
+
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
     if supabase:
-        user_data = get_or_create_user(user_id)
-        user_name = user_data.get('user_name') if user_data else None
         update_last_active(user_id)
+    print(f"📸 用戶 {user_id} 圖片處理完成")
 
     # ===== 訂閱相關指令 =====
     if supabase:
