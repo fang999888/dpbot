@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 終極版（每日知識不重複 + 主動查詢小知識）
+# app.py - 蕨積最終完整版（Gemini圖片識別 + 失敗賣萌）
 import os
 import json
 import requests
@@ -6,6 +6,7 @@ import uuid
 import time
 import random
 import re
+import base64
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, abort, jsonify, send_file
 from linebot import LineBotApi, WebhookHandler
@@ -21,6 +22,11 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 import atexit
 import urllib3
+# Gemini
+import google.generativeai as genai
+from PIL import Image
+from io import BytesIO
+
 # 抑制 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -32,7 +38,8 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
-CWA_API_KEY = os.getenv('CWA_API_KEY')          # 中央氣象署授權碼
+CWA_API_KEY = os.getenv('CWA_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -47,6 +54,16 @@ else:
 
 # DeepSeek
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+
+# Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    # 使用最新 vision 模型
+    gemini_vision_model = genai.GenerativeModel('gemini-1.5-flash')
+    print("✅ Gemini Vision 初始化成功")
+else:
+    gemini_vision_model = None
+    print("⚠️ 未設定 Gemini API Key，圖片識別功能將無法使用")
 
 # ==================== 圖片暫存區 ====================
 image_temp_store = {}
@@ -66,7 +83,7 @@ SORRY_MESSAGES = [
     "🌿 葉子遮到眼睛了，看不到啦！"
 ]
 
-# ==================== 內建植物知識庫（供每日推播與主動查詢共用）====================
+# ==================== 內建植物知識庫 ====================
 LOCAL_FACTS = [
     "🌵 仙人掌的刺其實是變態葉，用來減少水分蒸發！",
     "🍌 香蕉是莓果，草莓反而不是，植物界也搞詐欺！",
@@ -101,7 +118,7 @@ CITY_MAPPING = {
 }
 
 def get_weather(city):
-    """從中央氣象署API取得即時天氣資料（修正索引版）"""
+    """從中央氣象署API取得即時天氣資料"""
     if not CWA_API_KEY:
         return {"success": False, "message": "❌ 未設定氣象API金鑰，請在環境變數中加入 CWA_API_KEY"}
 
@@ -110,19 +127,15 @@ def get_weather(city):
     url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/{dataset_id}?Authorization={CWA_API_KEY}&format=JSON&locationName={city_name}"
 
     try:
-        print(f"🔍 正在查詢天氣: {city_name}")
         response = requests.get(url, timeout=10, verify=False)
         response.raise_for_status()
         data = response.json()
 
         if 'records' not in data:
-            print(f"⚠️ API回傳格式異常: {data}")
-            return {"success": False, "message": "天氣資料格式異常，請稍後再試"}
+            return {"success": False, "message": "天氣資料格式異常"}
 
         location = data['records']['location'][0]
         weather_elements = location['weatherElement']
-
-        # 根據實際API順序修正索引：0:Wx, 1:PoP, 2:MinT, 3:CI, 4:MaxT
         weather_status = weather_elements[0]['time'][0]['parameter']['parameterName']
         rain_prob = weather_elements[1]['time'][0]['parameter']['parameterName']
         min_temp = weather_elements[2]['time'][0]['parameter']['parameterName']
@@ -142,19 +155,11 @@ def get_weather(city):
             "min_temp": safe_int(min_temp),
             "rain_prob": safe_int(rain_prob)
         }
-
-    except requests.exceptions.RequestException as e:
-        print(f"天氣API網路錯誤: {e}")
-        return {"success": False, "message": "無法連接到氣象服務，請稍後再試"}
-    except (KeyError, IndexError, ValueError) as e:
-        print(f"天氣資料解析錯誤: {e}")
-        return {"success": False, "message": "取得的天氣資料無法解析，可能暫時不支援該地區"}
     except Exception as e:
-        print(f"天氣API未預期錯誤: {e}")
-        return {"success": False, "message": "查詢天氣時發生未知錯誤"}
+        print(f"天氣API錯誤: {e}")
+        return {"success": False, "message": "天氣查詢失敗"}
 
 def get_watering_advice(weather_data):
-    """根據天氣給澆水建議"""
     rain_prob = weather_data.get('rain_prob', 0)
     temp = weather_data.get('max_temp', 25)
     if rain_prob >= 70:
@@ -197,36 +202,26 @@ def is_professional_question(text):
     if len(text) <= 6:
         for plant in PLANT_LIST:
             if plant in text:
-                print(f"🌱 短句植物名觸發專業模式: {text}")
                 return True
         return False
     for phrase in CASUAL_PHRASES:
         if phrase in text_lower and len(text) < 15:
             return False
     total_weight = 0
-    matched_keywords = []
     has_plant = False
     for keyword, weight in PROFESSIONAL_WEIGHTS.items():
         if keyword in text:
             total_weight += weight
-            matched_keywords.append(f"{keyword}(+{weight})")
             if weight >= 3 and keyword in PLANT_LIST:
                 has_plant = True
-    if matched_keywords:
-        print(f"🔍 命中關鍵字: {', '.join(matched_keywords)} | 總權重: {total_weight}")
     if has_plant and total_weight >= 2:
-        print(f"✅ 專業模式 triggered (植物+症狀)")
         return True
     if total_weight >= 3:
-        print(f"✅ 專業模式 triggered (權重總和: {total_weight})")
         return True
     if has_plant and total_weight >= 1 and any(q in text for q in ["?", "？", "嗎", "呢"]):
-        print(f"✅ 專業模式 triggered (植物+問句)")
         return True
     if ("怎麼" in text or "如何" in text) and total_weight >= 1:
-        print(f"✅ 專業模式 triggered (疑問詞+關鍵字)")
         return True
-    print(f"❌ 賣萌模式 (權重總和: {total_weight})")
     return False
 
 # ==================== 蕨積雙模式人設 ====================
@@ -281,11 +276,9 @@ def ask_deepseek(question, user_name=None, is_professional=False):
 問題：{question}"""
         system_prompt = get_professional_prompt(user_name)
         data = {"model": "deepseek-chat", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": forced_question}], "max_tokens": 400, "temperature": 0.1, "top_p": 0.1}
-        print(f"🔬 專業模式 - 問題: {question[:30]}...")
     else:
         system_prompt = get_casual_prompt(user_name)
         data = {"model": "deepseek-chat", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": question}], "max_tokens": 100, "temperature": 0.9}
-        print(f"😊 賣萌模式 - 問題: {question[:30]}...")
     try:
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
@@ -294,7 +287,7 @@ def ask_deepseek(question, user_name=None, is_professional=False):
         print(f"DeepSeek錯誤: {e}")
         return "🌿 葉子被風吹亂了"
 
-# ==================== 用戶管理（含名字）====================
+# ==================== 用戶管理 ====================
 def get_or_create_user(user_id):
     if not supabase: return None
     try:
@@ -363,8 +356,6 @@ def unsubscribe_user(user_id):
 
 # ==================== 主動查詢小知識 ====================
 def get_random_local_fact():
-    """從內建知識庫隨機選取一條（用於主動查詢）"""
-    import random
     return random.choice(LOCAL_FACTS)
 
 # ==================== 每日植物小知識（永不重複版）====================
@@ -372,15 +363,13 @@ _last_fact = None
 
 def get_daily_plant_fact():
     global _last_fact
-    # 使用日期決定當天備案索引
-    today_yday = datetime.now(timezone.utc).timetuple().tm_yday  # 1~366
+    today_yday = datetime.now(timezone.utc).timetuple().tm_yday
     backup_index = today_yday % len(LOCAL_FACTS)
     backup_fact = LOCAL_FACTS[backup_index]
 
     try:
         headers = {'Authorization': f'Bearer {DEEPSEEK_API_KEY}', 'Content-Type': 'application/json'}
-        fact_prompt = """請給一則「20字內」的搞笑植物知識，要讓人會心一笑。
-今天的主題可以和昨天完全不同。範例：
+        fact_prompt = """請給一則「20字內」的搞笑植物知識，要讓人會心一笑。今天的主題可以和昨天完全不同。範例：
 「香蕉是莓果，草莓不是」
 「蘆薈晚上吐氧氣」
 「含羞草不是害羞」
@@ -391,7 +380,6 @@ def get_daily_plant_fact():
         if len(ai_fact) > 50:
             ai_fact = ai_fact[:50] + "…"
 
-        import random
         if random.random() < 0.7 and ai_fact != _last_fact:
             _last_fact = ai_fact
             return ai_fact
@@ -402,14 +390,41 @@ def get_daily_plant_fact():
             _last_fact = final_fact
             return final_fact
     except Exception as e:
-        print(f"AI知識失敗，改用當天內建知識: {e}")
+        print(f"AI知識失敗: {e}")
         final_fact = backup_fact
         if final_fact == _last_fact:
             final_fact = LOCAL_FACTS[(backup_index + 1) % len(LOCAL_FACTS)]
         _last_fact = final_fact
         return final_fact
 
-# ==================== 推播函數（含天氣資訊，預設桃園）====================
+# ==================== Gemini Vision 圖片識別 ====================
+def analyze_image_with_gemini(image_bytes):
+    """使用Gemini Vision分析圖片，返回描述文字，失敗返回None"""
+    if not gemini_vision_model:
+        return None
+    try:
+        # 將bytes轉為PIL Image
+        img = Image.open(BytesIO(image_bytes))
+        # 轉RGB
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        # 調整大小以減少token（可選）
+        max_size = (1024, 1024)
+        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+        # 提示詞：不限字數和方式
+        prompt = "請描述這張圖片中的內容，特別是如果裡面有植物，請告訴我它是什麼植物、有什麼特徵。如果沒有植物，就描述圖片內容。"
+
+        response = gemini_vision_model.generate_content([prompt, img])
+        if response and response.text:
+            return response.text.strip()
+        else:
+            return None
+    except Exception as e:
+        print(f"Gemini Vision 錯誤: {e}")
+        return None
+
+# ==================== 推播函數 ====================
 def send_daily_push():
     if not supabase:
         print("❌ Supabase未連線，無法推播")
@@ -419,9 +434,7 @@ def send_daily_push():
     try:
         response = supabase.table('subscribers').select('*').eq('is_active', True).execute()
         all_active = response.data
-        print(f"🔍 所有活躍用戶: {all_active}")
         subscribers = [user for user in all_active if user.get('last_push_date') != today]
-        print(f"🔍 過濾後應推播用戶: {subscribers}")
         if not subscribers:
             print("📭 今天沒有需要推播的用戶")
             return
@@ -432,20 +445,14 @@ def send_daily_push():
         success_count = 0
         for sub in subscribers:
             user_id = sub['user_id']
-            last_push = sub.get('last_push_date')
-            print(f"👉 準備推播給 {user_id} (last_push_date={last_push})")
-
             city = None
             try:
                 user_res = supabase.table('users').select('city').eq('user_id', user_id).execute()
                 if user_res.data and user_res.data[0].get('city'):
                     city = user_res.data[0]['city']
-                    print(f"📍 用戶 {user_id} 儲存的城市: {city}")
                 else:
                     city = "桃園"
-                    print(f"📍 用戶 {user_id} 未設定城市，使用預設城市: 桃園")
-            except Exception as e:
-                print(f"❌ 查詢用戶 {user_id} 城市失敗: {e}")
+            except:
                 city = "桃園"
 
             weather_text = ""
@@ -453,32 +460,21 @@ def send_daily_push():
                 weather = get_weather(city)
                 if weather['success']:
                     weather_text = f"\n\n今日天氣（{weather['city']}）：{weather['status']}，最高{weather['max_temp']}°C，最低{weather['min_temp']}°C，降雨機率{weather['rain_prob']}%"
-                    print(f"✅ 成功獲取 {city} 天氣")
-                else:
-                    print(f"❌ 獲取 {city} 天氣失敗: {weather.get('message')}")
 
             message_text = f"🌱 **蕨積早安**\n\n{daily_fact}{weather_text}"
 
             try:
                 line_bot_api.push_message(user_id, TextSendMessage(text=message_text))
-                update_result = supabase.table('subscribers').update({'last_push_date': today}).eq('user_id', user_id).execute()
-                print(f"✅ 推播成功，已更新 last_push_date: {update_result.data}")
+                supabase.table('subscribers').update({'last_push_date': today}).eq('user_id', user_id).execute()
                 success_count += 1
             except Exception as e:
                 print(f"❌ 推播失敗 {user_id}: {e}")
 
         print(f"📊 推播完成：成功 {success_count} / 總共 {len(subscribers)}")
     except Exception as e:
-        print(f"❌ 推播處理時發生例外: {e}")
+        print(f"❌ 推播處理例外: {e}")
 
-# ==================== 排程器初始化（全域啟動）====================
-# 確保只在主進程啟動，避免 reloader 重複
-if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
-    try:
-        scheduler = init_scheduler()
-    except Exception as e:
-        print(f"❌ 排程器啟動失敗: {e}")
-
+# ==================== 排程器 ====================
 def init_scheduler():
     scheduler = BackgroundScheduler()
     tz = pytz.timezone('Asia/Taipei')
@@ -487,6 +483,13 @@ def init_scheduler():
     print("✅ 排程器已啟動，每天 08:00 推播")
     atexit.register(lambda: scheduler.shutdown())
     return scheduler
+
+# 全域啟動排程器
+if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    try:
+        scheduler = init_scheduler()
+    except Exception as e:
+        print(f"❌ 排程器啟動失敗: {e}")
 
 # ==================== LINE Webhook ====================
 @app.route("/callback", methods=['POST'])
@@ -499,14 +502,13 @@ def callback():
         abort(400)
     return 'OK', 200
 
-# ==================== 好友事件 ====================
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
     if supabase:
         get_or_create_user(user_id)
         subscribe_user(user_id)
-    welcome_msg = "🌿 蕨積來啦！\n\n跟我說你的名字和城市，這樣我能：\n✅ 叫你名字聊天\n✅ 給你天氣澆水建議\n✅ 說「知識」隨機給你小知識\n\n直接說「我叫XXX」或「我在台北」就可以囉！"
+    welcome_msg = "🌿 蕨積來啦！\n\n跟我說你的名字和城市，這樣我能：\n✅ 叫你名字聊天\n✅ 給你天氣澆水建議\n✅ 說「知識」隨機給你小知識\n✅ 傳圖片我會幫你識別（如果失敗就賣萌）\n\n直接說「我叫XXX」或「我在台北」就可以囉！"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_msg))
 
 @handler.add(UnfollowEvent)
@@ -514,20 +516,43 @@ def handle_unfollow(event):
     if supabase:
         unsubscribe_user(event.source.user_id)
 
-# ==================== 圖片訊息處理 ====================
+# ==================== 圖片訊息處理（Gemini識別 + 失敗賣萌）====================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
+    message_id = event.message.id
+
     try:
+        # 下載圖片
+        message_content = line_bot_api.get_message_content(message_id)
+        image_bytes = b''
+        for chunk in message_content.iter_content():
+            image_bytes += chunk
+
+        # 嘗試用Gemini識別
+        if gemini_vision_model:
+            result = analyze_image_with_gemini(image_bytes)
+            if result:
+                # 識別成功，回傳結果（不限字數和方式）
+                line_bot_api.reply_message(reply_token, TextSendMessage(text=result))
+                print(f"📸 用戶 {user_id} 圖片識別成功")
+                return
+
+        # 識別失敗或無Gemini，回傳賣萌訊息
         reply_text = random.choice(SORRY_MESSAGES)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
-        if supabase:
-            update_last_active(user_id)
-        print(f"📸 用戶 {user_id} 傳了圖片")
+        print(f"📸 用戶 {user_id} 圖片識別失敗，改用賣萌")
+
     except Exception as e:
         print(f"圖片處理失敗: {e}")
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="🌿 圖片處理失敗，再試一次？"))
+        # 出錯時也賣萌
+        reply_text = random.choice(SORRY_MESSAGES)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+
+    finally:
+        if supabase:
+            update_last_active(user_id)
 
 # ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
@@ -542,7 +567,7 @@ def handle_text_message(event):
         user_name = user_data.get('user_name') if user_data else None
         update_last_active(user_id)
 
-    # ===== 訂閱相關指令 =====
+    # 訂閱相關
     if supabase:
         if user_message in ["取消訂閱", "停止推播", "unsubscribe"]:
             unsubscribe_user(user_id)
@@ -550,10 +575,10 @@ def handle_text_message(event):
             return
         if user_message in ["訂閱", "subscribe"]:
             subscribe_user(user_id)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！明早8點見"))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！不定時發送植物小常識！"))
             return
 
-    # ===== 記住名字功能 =====
+    # 記住名字
     name_match = re.match(r"^我叫(.+)$", user_message) or re.match(r"^我是(.+)$", user_message)
     if name_match:
         name = name_match.group(1).strip()
@@ -562,7 +587,7 @@ def handle_text_message(event):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 哈囉 {name}！我記住你了～"))
             return
 
-    # ===== 設定城市功能 =====
+    # 設定城市
     city_match = re.match(r"^我在(.+)$", user_message) or re.match(r"^我住(.+)$", user_message)
     if city_match:
         city = city_match.group(1).strip()
@@ -576,7 +601,7 @@ def handle_text_message(event):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～"))
             return
 
-    # ===== 天氣查詢功能 =====
+    # 天氣查詢
     if "天氣" in user_message or "下雨" in user_message or "澆水" in user_message:
         city = None
         for c in CITY_MAPPING.keys():
@@ -606,13 +631,13 @@ def handle_text_message(event):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
             return
 
-    # ===== 🆕 主動查詢小知識 =====
+    # 主動查詢小知識
     if any(keyword in user_message for keyword in ["知識", "常識", "小知識", "冷知識"]):
         fact = get_random_local_fact()
         line_bot_api.reply_message(reply_token, TextSendMessage(text=fact))
         return
 
-    # ===== 核心：智能專業判斷 =====
+    # 專業判斷
     is_professional = is_professional_question(user_message)
     mode = "🔬 專業模式" if is_professional else "😊 賣萌模式"
     print(f"📝 用戶 {user_id} | {mode} | 問題: {user_message}")
@@ -628,17 +653,17 @@ def test_push():
 @app.route("/test-line-push", methods=['GET'])
 def test_line_push():
     try:
-        line_bot_api.push_message('Uaa8ad4daa73c549dd400f9ad2ef92217', TextSendMessage(text="🧪 這是 LINE Push 測試訊息，收到代表 token 有效！"))
-        return {"status": "success", "message": "測試訊息已發送"}, 200
+        line_bot_api.push_message('Uaa8ad4daa73c549dd400f9ad2ef92217', TextSendMessage(text="🧪 這是 LINE Push 測試訊息"))
+        return {"status": "success"}, 200
     except Exception as e:
-        print(f"測試 Push 失敗: {e}")
         return {"status": "error", "message": str(e)}, 500
 
 @app.route("/", methods=['GET'])
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
-    scheduler_status = "✅ 運行中"
-    return f"🌿 蕨積7.0 終極版（知識庫查詢+每日不重複） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
+    scheduler_status = "✅ 運行中" if 'scheduler' in globals() else "⚠️ 未啟動"
+    gemini_status = "✅ 已啟用" if gemini_vision_model else "⚠️ 未設定"
+    return f"🌿 蕨積最終版（Gemini圖片） | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
