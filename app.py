@@ -1,4 +1,4 @@
-# app.py - 蕨積7.0 完整版（推播附加天氣，未設定城市預設桃園）
+# app.py - 蕨積7.0 終極版（每日知識不重複 + 主動查詢小知識）
 import os
 import json
 import requests
@@ -21,11 +21,7 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 import atexit
 import urllib3
-
-# 導入 Gemini
-import google.generativeai as genai
-
-# 抑制因關閉 SSL 驗證而產生的 InsecureRequestWarning 警告
+# 抑制 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
@@ -37,7 +33,6 @@ DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 CWA_API_KEY = os.getenv('CWA_API_KEY')          # 中央氣象署授權碼
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')    # Gemini 金鑰
 
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -52,16 +47,6 @@ else:
 
 # DeepSeek
 DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
-
-# Gemini 初始化
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    # 使用從日誌中確認可用的模型名稱
-    gemini_model = genai.GenerativeModel('models/gemini-2.5-flash')  # 可依實際清單調整
-    print("✅ Gemini 初始化成功")
-else:
-    gemini_model = None
-    print("⚠️ 未設定 GEMINI_API_KEY，圖片識別功能將無法使用")
 
 # ==================== 圖片暫存區 ====================
 image_temp_store = {}
@@ -81,6 +66,30 @@ SORRY_MESSAGES = [
     "🌿 葉子遮到眼睛了，看不到啦！"
 ]
 
+# ==================== 內建植物知識庫（供每日推播與主動查詢共用）====================
+LOCAL_FACTS = [
+    "🌵 仙人掌的刺其實是變態葉，用來減少水分蒸發！",
+    "🍌 香蕉是莓果，草莓反而不是，植物界也搞詐欺！",
+    "🌿 蘆薈晚上會釋放氧氣，很適合放臥室喔～",
+    "🎋 竹子其實是草，不是樹，而且有些品種一天可以長一米！",
+    "🌻 向日葵會跟著太陽轉，是因為莖部的生長素怕光。",
+    "🍍 鳳梨是很多漿果集合成的複合果，每一粒「眼睛」都是一朵花。",
+    "🌱 含羞草閉合不是害羞，是為了嚇跑草食動物。",
+    "🍅 番茄是水果，但我們把它當蔬菜用，法律上也判為蔬菜。",
+    "🌾 稻米是人類一半人口的主食，台灣種植的是梗稻和秈稻。",
+    "🍈 哈密瓜和香瓜是親戚，但哈密瓜更怕潮濕。",
+    "🌿 龜背芋的洞洞是為了讓陽光穿透到下面的葉子。",
+    "🌱 多肉植物晚上吸收二氧化碳，白天關閉氣孔。",
+    "🌲 世界上最高的樹是加州紅杉，可以超過100公尺。",
+    "🌸 櫻花的葉子發酵後可以製成櫻花茶，有淡淡香氣。",
+    "🍂 楓葉變紅是因為秋天葉綠素分解，留下花青素。",
+    "🌿 薄荷不僅清涼，還是天然的驅蟲劑。",
+    "🌱 豆科植物的根瘤可以固氮，是天然的肥料工廠。",
+    "🌻 向日葵的頭狀花序其實是由許多小花組成的。",
+    "🍎 蘋果切開後變褐色是因為酚類物質氧化。",
+    "🌵 量天尺（火龍果的花）只開一晚，被稱為『夜皇后』。"
+]
+
 # ==================== 天氣API設定（城市對照表）====================
 CITY_MAPPING = {
     "基隆": "基隆市", "台北": "臺北市", "新北": "新北市", "板橋": "新北市", "永和": "新北市",
@@ -97,7 +106,7 @@ def get_weather(city):
         return {"success": False, "message": "❌ 未設定氣象API金鑰，請在環境變數中加入 CWA_API_KEY"}
 
     city_name = CITY_MAPPING.get(city, city)
-    dataset_id = 'F-C0032-001'   # 一般天氣預報-今明36小時
+    dataset_id = 'F-C0032-001'
     url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/{dataset_id}?Authorization={CWA_API_KEY}&format=JSON&locationName={city_name}"
 
     try:
@@ -113,8 +122,7 @@ def get_weather(city):
         location = data['records']['location'][0]
         weather_elements = location['weatherElement']
 
-        # 根據實際API順序修正索引
-        # 索引0: Wx, 索引1: PoP, 索引2: MinT, 索引3: CI, 索引4: MaxT
+        # 根據實際API順序修正索引：0:Wx, 1:PoP, 2:MinT, 3:CI, 4:MaxT
         weather_status = weather_elements[0]['time'][0]['parameter']['parameterName']
         rain_prob = weather_elements[1]['time'][0]['parameter']['parameterName']
         min_temp = weather_elements[2]['time'][0]['parameter']['parameterName']
@@ -146,10 +154,9 @@ def get_weather(city):
         return {"success": False, "message": "查詢天氣時發生未知錯誤"}
 
 def get_watering_advice(weather_data):
-    """根據天氣給澆水建議（使用最高溫作為參考溫度）"""
+    """根據天氣給澆水建議"""
     rain_prob = weather_data.get('rain_prob', 0)
     temp = weather_data.get('max_temp', 25)
-
     if rain_prob >= 70:
         return "🌧️ 今天會下雨，戶外植物不用澆水，室內等土乾再澆"
     elif rain_prob >= 40:
@@ -354,61 +361,55 @@ def unsubscribe_user(user_id):
         print(f"取消訂閱失敗: {e}")
         return False
 
-# ==================== 每日植物小知識（混合隨機且不重複）====================
+# ==================== 主動查詢小知識 ====================
+def get_random_local_fact():
+    """從內建知識庫隨機選取一條（用於主動查詢）"""
+    import random
+    return random.choice(LOCAL_FACTS)
+
+# ==================== 每日植物小知識（永不重複版）====================
 _last_fact = None
 
 def get_daily_plant_fact():
     global _last_fact
-    local_facts = [
-        "🌵 仙人掌的刺其實是變態葉，用來減少水分蒸發！",
-        "🍌 香蕉是莓果，草莓反而不是，植物界也搞詐欺！",
-        "🌿 蘆薈晚上會釋放氧氣，很適合放臥室喔～",
-        "🎋 竹子其實是草，不是樹，而且有些品種一天可以長一米！",
-        "🌻 向日葵會跟著太陽轉，是因為莖部的生長素怕光。",
-        "🍍 鳳梨是很多漿果集合成的複合果，每一粒「眼睛」都是一朵花。",
-        "🌱 含羞草閉合不是害羞，是為了嚇跑草食動物。",
-        "🍅 番茄是水果，但我們把它當蔬菜用，法律上也判為蔬菜。",
-        "🌾 稻米是人類一半人口的主食，台灣種植的是梗稻和秈稻。",
-        "🍈 哈密瓜和香瓜是親戚，但哈密瓜更怕潮濕。",
-        "🌿 龜背芋的洞洞是為了讓陽光穿透到下面的葉子。",
-        "🌱 多肉植物晚上吸收二氧化碳，白天關閉氣孔。",
-        "🌲 世界上最高的樹是加州紅杉，可以超過100公尺。",
-        "🌸 櫻花的葉子發酵後可以製成櫻花茶，有淡淡香氣。",
-        "🍂 楓葉變紅是因為秋天葉綠素分解，留下花青素。"
-    ]
-    import random
-    # 確保本地選項不與上次相同（最多嘗試5次）
-    local_choice = random.choice(local_facts)
-    attempts = 0
-    while local_choice == _last_fact and attempts < 5:
-        local_choice = random.choice(local_facts)
-        attempts += 1
+    # 使用日期決定當天備案索引
+    today_yday = datetime.now(timezone.utc).timetuple().tm_yday  # 1~366
+    backup_index = today_yday % len(LOCAL_FACTS)
+    backup_fact = LOCAL_FACTS[backup_index]
 
     try:
         headers = {'Authorization': f'Bearer {DEEPSEEK_API_KEY}', 'Content-Type': 'application/json'}
         fact_prompt = """請給一則「20字內」的搞笑植物知識，要讓人會心一笑。
-今天的主題盡量和昨天不一樣。範例：
+今天的主題可以和昨天完全不同。範例：
 「香蕉是莓果，草莓不是」
 「蘆薈晚上吐氧氣」
-「含羞草不是害羞」"""
+「含羞草不是害羞」
+「豬籠草會吃蟲」"""
         data = {"model": "deepseek-chat", "messages": [{"role": "user", "content": fact_prompt}], "max_tokens": 100, "temperature": 0.9}
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
         ai_fact = response.json()['choices'][0]['message']['content'].strip()
         if len(ai_fact) > 50:
             ai_fact = ai_fact[:50] + "…"
-        # 決定使用 AI 還是本地（70% AI）
-        if random.random() < 0.7:
+
+        import random
+        if random.random() < 0.7 and ai_fact != _last_fact:
             _last_fact = ai_fact
             return ai_fact
         else:
-            _last_fact = local_choice
-            return local_choice
+            final_fact = backup_fact
+            if final_fact == _last_fact:
+                final_fact = LOCAL_FACTS[(backup_index + 1) % len(LOCAL_FACTS)]
+            _last_fact = final_fact
+            return final_fact
     except Exception as e:
-        print(f"AI知識失敗，改用內建庫: {e}")
-        _last_fact = local_choice
-        return local_choice
+        print(f"AI知識失敗，改用當天內建知識: {e}")
+        final_fact = backup_fact
+        if final_fact == _last_fact:
+            final_fact = LOCAL_FACTS[(backup_index + 1) % len(LOCAL_FACTS)]
+        _last_fact = final_fact
+        return final_fact
 
-# ==================== 推播函數（含天氣資訊，未設定城市預設桃園）====================
+# ==================== 推播函數（含天氣資訊，預設桃園）====================
 def send_daily_push():
     if not supabase:
         print("❌ Supabase未連線，無法推播")
@@ -416,7 +417,6 @@ def send_daily_push():
     today = datetime.now(timezone.utc).date().isoformat()
     print(f"🔍 今天的日期 (UTC): {today}")
     try:
-        # 取得所有活躍訂閱用戶
         response = supabase.table('subscribers').select('*').eq('is_active', True).execute()
         all_active = response.data
         print(f"🔍 所有活躍用戶: {all_active}")
@@ -426,7 +426,6 @@ def send_daily_push():
             print("📭 今天沒有需要推播的用戶")
             return
 
-        # 產生今日小知識（所有用戶共用同一則）
         daily_fact = get_daily_plant_fact()
         print(f"🌱 今日知識: {daily_fact}")
 
@@ -436,7 +435,6 @@ def send_daily_push():
             last_push = sub.get('last_push_date')
             print(f"👉 準備推播給 {user_id} (last_push_date={last_push})")
 
-            # 查詢該用戶儲存的城市（如果有）
             city = None
             try:
                 user_res = supabase.table('users').select('city').eq('user_id', user_id).execute()
@@ -444,15 +442,12 @@ def send_daily_push():
                     city = user_res.data[0]['city']
                     print(f"📍 用戶 {user_id} 儲存的城市: {city}")
                 else:
-                    # 用戶未設定城市，預設為桃園
                     city = "桃園"
                     print(f"📍 用戶 {user_id} 未設定城市，使用預設城市: 桃園")
             except Exception as e:
                 print(f"❌ 查詢用戶 {user_id} 城市失敗: {e}")
-                # 查詢失敗時也預設桃園
                 city = "桃園"
 
-            # 若有城市則附加天氣資訊（city 此時一定有值）
             weather_text = ""
             if city:
                 weather = get_weather(city)
@@ -462,7 +457,6 @@ def send_daily_push():
                 else:
                     print(f"❌ 獲取 {city} 天氣失敗: {weather.get('message')}")
 
-            # 組合完整訊息
             message_text = f"🌱 **蕨積早安**\n\n{daily_fact}{weather_text}"
 
             try:
@@ -477,7 +471,14 @@ def send_daily_push():
     except Exception as e:
         print(f"❌ 推播處理時發生例外: {e}")
 
-# ==================== 排程器 ====================
+# ==================== 排程器初始化（全域啟動）====================
+# 確保只在主進程啟動，避免 reloader 重複
+if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    try:
+        scheduler = init_scheduler()
+    except Exception as e:
+        print(f"❌ 排程器啟動失敗: {e}")
+
 def init_scheduler():
     scheduler = BackgroundScheduler()
     tz = pytz.timezone('Asia/Taipei')
@@ -505,7 +506,7 @@ def handle_follow(event):
     if supabase:
         get_or_create_user(user_id)
         subscribe_user(user_id)
-    welcome_msg = "🌿 蕨積來啦！\n\n跟我說你的名字和城市，這樣我能：\n✅ 叫你名字聊天\n✅ 給你天氣澆水建議\n\n直接說「我叫XXX」或「我在台北」就可以囉！"
+    welcome_msg = "🌿 蕨積來啦！\n\n跟我說你的名字和城市，這樣我能：\n✅ 叫你名字聊天\n✅ 給你天氣澆水建議\n✅ 說「知識」隨機給你小知識\n\n直接說「我叫XXX」或「我在台北」就可以囉！"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_msg))
 
 @handler.add(UnfollowEvent)
@@ -513,60 +514,20 @@ def handle_unfollow(event):
     if supabase:
         unsubscribe_user(event.source.user_id)
 
-# ==================== 圖片訊息處理（使用 Gemini 辨識，失敗時回賣萌）====================
+# ==================== 圖片訊息處理 ====================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
     reply_token = event.reply_token
-
-    # 如果沒有 Gemini 金鑰，直接使用賣萌回覆
-    if not gemini_model:
+    try:
         reply_text = random.choice(SORRY_MESSAGES)
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
-        print(f"📸 用戶 {user_id} 傳了圖片（無 Gemini 金鑰，使用預設回覆）")
-        return
-
-    try:
-        # 1. 從 LINE 取得圖片內容（二進制）
-        message_content = line_bot_api.get_message_content(event.message.id)
-        image_bytes = b''
-        for chunk in message_content.iter_content():
-            image_bytes += chunk
-
-        # 2. 準備提示詞：要求簡短回答（30-50字）
-        prompt = "你是一個植物專家。請用30-50字簡短描述這張圖片的植物種類、健康狀況或有趣之處。若無植物則簡單描述。請用繁體中文。"
-
-        # 3. 設定生成參數限制輸出長度
-        generation_config = {
-            "max_output_tokens": 80,      # 約可產生40個中文字
-            "temperature": 0.2,            # 穩定度
-        }
-
-        # 4. 呼叫 Gemini Vision API
-        response = gemini_model.generate_content(
-            [prompt, {"mime_type": "image/jpeg", "data": image_bytes}],
-            generation_config=generation_config
-        )
-
-        # 5. 檢查回覆是否有效
-        if response and response.text and len(response.text.strip()) > 5:
-            reply_text = response.text.strip()
-            print(f"✅ Gemini 辨識成功，回覆: {reply_text}")
-        else:
-            # 若回覆內容過短或為空，視為無法辨識，改用賣萌回覆
-            print("⚠️ Gemini 回覆內容過短或為空，改用賣萌回覆")
-            reply_text = random.choice(SORRY_MESSAGES)
-
+        if supabase:
+            update_last_active(user_id)
+        print(f"📸 用戶 {user_id} 傳了圖片")
     except Exception as e:
-        print(f"❌ 圖片處理發生例外: {e}")
-        # 任何錯誤都改用賣萌回覆
-        reply_text = random.choice(SORRY_MESSAGES)
-
-    # 6. 回覆用戶
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
-    if supabase:
-        update_last_active(user_id)
-    print(f"📸 用戶 {user_id} 圖片處理完成")
+        print(f"圖片處理失敗: {e}")
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="🌿 圖片處理失敗，再試一次？"))
 
 # ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
@@ -634,7 +595,6 @@ def handle_text_message(event):
                 else:
                     reply = f"{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
-                # 如果用戶還沒儲存城市，自動儲存
                 if user_data and not user_data.get('city') and supabase:
                     update_user_city(user_id, city)
                 return
@@ -645,6 +605,12 @@ def handle_text_message(event):
             reply = "🌿 你想查哪個城市的天氣？\n直接告訴我城市名稱，例如：\n「台北天氣」\n「台中會下雨嗎」"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
             return
+
+    # ===== 🆕 主動查詢小知識 =====
+    if any(keyword in user_message for keyword in ["知識", "常識", "小知識", "冷知識"]):
+        fact = get_random_local_fact()
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=fact))
+        return
 
     # ===== 核心：智能專業判斷 =====
     is_professional = is_professional_question(user_message)
@@ -672,14 +638,9 @@ def test_line_push():
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中"
-    gemini_status = "✅ 已啟用" if gemini_model else "⚠️ 未設定"
-    return f"🌿 蕨積7.0 完整版（推播含天氣，預設桃園） | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status}", 200
+    return f"🌿 蕨積7.0 終極版（知識庫查詢+每日不重複） | Supabase: {supabase_status} | 排程器: {scheduler_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
-    try:
-        scheduler = init_scheduler()
-    except Exception as e:
-        print(f"❌ 排程器啟動失敗: {e}")
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
