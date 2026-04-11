@@ -666,7 +666,7 @@ def webchat_page():
     """提供網頁聊天室介面（含 LIFF）"""
     liff_id = LIFF_ID if LIFF_ID else '請在環境變數設定LIFF_ID'
     
-    html_content = '''
+    return '''
     <!DOCTYPE html>
     <html>
     <head>
@@ -792,7 +792,7 @@ def webchat_page():
             var inputEl = document.getElementById('input');
             var sendBtn = document.getElementById('sendBtn');
             
-            var LIFF_ID = '''' + liff_id + '''';
+            var LIFF_ID = "''' + liff_id + '''";
             
             function addSystemMessage(text, isError) {
                 var msgDiv = document.createElement('div');
@@ -947,9 +947,7 @@ def webchat_page():
         </script>
     </body>
     </html>
-    '''.replace(''' + liff_id + '''', liff_id)
-    
-    return html_content
+    '''.replace('''' + liff_id + '''', liff_id)
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
     """網頁發送訊息 - 觸發 LINE Push"""
