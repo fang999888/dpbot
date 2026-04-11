@@ -8,7 +8,7 @@ import random
 import re
 import base64
 from datetime import datetime, timezone, timedelta
-from flask import Flask, request, abort, jsonify, send_file
+from flask import Flask, request, abort, jsonify, render_template
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -40,7 +40,7 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 CWA_API_KEY = os.getenv('CWA_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-LIFF_ID = os.getenv('LIFF_ID', '')  # 新增：LIFF ID
+LIFF_ID = os.getenv('LIFF_ID', '')
 
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -64,10 +64,6 @@ if GEMINI_API_KEY:
 else:
     gemini_vision_model = None
     print("⚠️ 未設定 Gemini API Key，圖片識別功能將無法使用")
-
-# ==================== 圖片暫存區 ====================
-image_temp_store = {}
-pending_vision = {}
 
 # ==================== 網頁對話暫存區 ====================
 web_pending_replies = {}  # {user_id: {"reply": "內容", "timestamp": time}}
@@ -555,18 +551,6 @@ def handle_image_message(event):
 
 # ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
-
-def handle_text_message(event):
-    user_message = event.message.text.strip()
-    reply_token = event.reply_token
-    user_id = event.source.user_id  # 這是 LINE Bot Webhook 收到的真實 ID
-    
-    # 臨時除錯：顯示 User ID
-    if user_message == "我的ID":
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你的 LINE Bot User ID: {user_id}"))
-        return
-    
-    # ... 後面是你原本的所有程式碼 ...
 def handle_text_message(event):
     user_message = event.message.text.strip()
     reply_token = event.reply_token
@@ -577,6 +561,11 @@ def handle_text_message(event):
         user_data = get_or_create_user(user_id)
         user_name = user_data.get('user_name') if user_data else None
         update_last_active(user_id)
+
+    # 除錯指令：顯示 User ID
+    if user_message == "我的ID":
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你的 LINE Bot User ID: {user_id}"))
+        return
 
     # 訂閱相關
     if supabase:
@@ -595,7 +584,9 @@ def handle_text_message(event):
         name = name_match.group(1).strip()
         if name and supabase:
             update_user_name(user_id, name)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 哈囉 {name}！我記住你了～"))
+            reply_text = f"🌿 哈囉 {name}！我記住你了～"
+            web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
     # 設定城市
@@ -609,7 +600,9 @@ def handle_text_message(event):
                 break
         if valid_city and supabase:
             update_user_city(user_id, valid_city)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text=f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～"))
+            reply_text = f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～"
+            web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
     # 天氣查詢
@@ -630,7 +623,6 @@ def handle_text_message(event):
                     reply = f"{user_name}，{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 else:
                     reply = f"{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
-                # 儲存回覆給網頁輪詢
                 web_pending_replies[user_id] = {"reply": reply, "timestamp": time.time()}
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
                 if user_data and not user_data.get('city') and supabase:
@@ -661,52 +653,34 @@ def handle_text_message(event):
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
 
 # ==================== 網頁對話功能（LIFF + 輪詢）====================
-from flask import render_template
-
 @app.route("/webchat", methods=['GET'])
 def webchat_page():
     """提供網頁聊天室介面（含 LIFF）"""
-    liff_id = LIFF_ID if LIFF_ID else '請在環境變數設定LIFF_ID'
-    return render_template('webchat.html', liff_id=liff_id)
+    return render_template('webchat.html', liff_id=LIFF_ID)
+
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
-    """網頁發送訊息 - 觸發 LINE Push"""
-    import traceback
-    
+    """網頁發送訊息 - 觸發 LINE Push，走原本的 LINE Bot 流程"""
     try:
         data = request.get_json()
         user_id = data.get('user_id')
         message = data.get('message', '').strip()
         
-        print(f"收到請求 - user_id: {user_id}, message: {message}")
+        print(f"📤 收到推播請求 - user_id: {user_id}, message: {message}")
         
         if not user_id or not message:
             return jsonify({'success': False, 'error': '缺少參數'}), 400
         
-        # 檢查 user_id 格式
-        if not user_id.startswith('U'):
-            print(f"⚠️ 警告：user_id 不是以 U 開頭，格式可能錯誤: {user_id}")
-        
-        # 發送訊息
-        result = line_bot_api.push_message(user_id, TextSendMessage(text=message))
-        print(f"推播成功: {result}")
+        # 發送 LINE Push 訊息
+        line_bot_api.push_message(user_id, TextSendMessage(text=message))
+        print(f"✅ 推播成功給 {user_id}")
         
         return jsonify({'success': True})
         
     except Exception as e:
-        error_msg = str(e)
-        print(f"推播失敗: {error_msg}")
-        print(traceback.format_exc())
-        
-        # 提供更友善的錯誤訊息
-        if '400' in error_msg and 'not friends' in error_msg.lower():
-            user_friendly_error = '請先將蕨積加入 LINE 好友'
-        elif '400' in error_msg:
-            user_friendly_error = '使用者 ID 無效，請重新登入'
-        else:
-            user_friendly_error = error_msg
-        
-        return jsonify({'success': False, 'error': user_friendly_error}), 500
+        print(f"❌ 推播錯誤: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route("/webchat/reply", methods=['GET'])
 def webchat_get_reply():
     """網頁輪詢取得 AI 回覆"""
