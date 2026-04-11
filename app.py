@@ -816,38 +816,56 @@ def webchat_page():
                 document.getElementById('lineLoginBtn').onclick = () => liff.login();
             }}
             
-            async function initLIFF() {{
-                try {{
-                    await liff.init({{ liffId: '{liff_id}' }});
-                    
-                    if (!liff.isLoggedIn()) {{
-                        showLoginButton();
-                        return;
-                    }}
-                    
-                    const profile = await liff.getProfile();
-                    const idToken = liff.getIDToken();
-                    
-                    if (idToken) {{
-                        const payload = JSON.parse(atob(idToken.split('.')[1]));
-                        lineUserId = payload.sub;
-                    }} else {{
-                        lineUserId = profile.userId;
-                    }}
-                    
-                    console.log('使用者 ID:', lineUserId);
-                    
-                    addSystemMessage('✅ 已連線，開始對話吧！', false);
-                    inputEl.disabled = false;
-                    sendBtn.disabled = false;
-                    
-                    startPolling();
-                }} catch (error) {{
-                    console.error('LIFF 初始化錯誤:', error);
-                    addSystemMessage('❌ 連線失敗，請重新整理頁面', true);
-                }}
-            }}
-            
+           async function initLIFF() {
+    try {
+        await liff.init({ liffId: '{liff_id}' });
+        
+        if (!liff.isLoggedIn()) {
+            showLoginButton();
+            return;
+        }
+        
+        // 獲取 ID Token
+        const idToken = liff.getIDToken();
+        if (!idToken) {
+            addSystemMessage('❌ 無法取得授權，請重新登入', true);
+            liff.logout();
+            liff.login();
+            return;
+        }
+        
+        // 解碼 ID Token 獲取正確的 User ID
+        // ID Token 是 JWT 格式，分成三部分：header.payload.signature
+        const payloadBase64 = idToken.split('.')[1];
+        const payloadJson = atob(payloadBase64);
+        const payload = JSON.parse(payloadJson);
+        
+        // 這個 sub 就是與 Messaging API 一致的 User ID！
+        const correctUserId = payload.sub;
+        
+        console.log('從 ID Token 獲取的 User ID:', correctUserId);
+        
+        // 檢查格式
+        if (!correctUserId.startsWith('U')) {
+            console.error('User ID 格式錯誤:', correctUserId);
+            addSystemMessage('❌ 使用者 ID 格式錯誤', true);
+            return;
+        }
+        
+        lineUserId = correctUserId;
+        console.log('✅ 正確的 User ID:', lineUserId);
+        
+        addSystemMessage('✅ 已連線，開始對話吧！', false);
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        
+        startPolling();
+        
+    } catch (error) {
+        console.error('LIFF 初始化錯誤:', error);
+        addSystemMessage('❌ 連線失敗，請重新整理頁面', true);
+    }
+}
             function startPolling() {{
                 if (pollInterval) clearInterval(pollInterval);
                 
