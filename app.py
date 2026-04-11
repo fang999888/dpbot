@@ -839,36 +839,45 @@ def webchat_page():
                     liff.login();
                 }};
             }}
-            
-            async function initLIFF() {{
-                try {{
-                    await liff.init({{ liffId: '{liff_id}' }});
-                    
-                    if (!liff.isLoggedIn()) {{
-                        // 未登入：顯示登入按鈕
-                        showLoginButton();
-                        return;
-                    }}
-                    
-                    // 已登入：取得使用者資料
-                    const profile = await liff.getProfile();
-                    lineUserId = profile.userId;
-                    console.log('使用者 ID:', lineUserId);
-                    
-                    addSystemMessage('✅ 已連線，開始對話吧！');
-                    
-                    // 啟用輸入框和發送按鈕
-                    inputEl.disabled = false;
-                    sendBtn.disabled = false;
-                    
-                    startPolling();
-                    
-                }} catch (error) {{
-                    console.error('LIFF 初始化錯誤:', error);
-                    addSystemMessage('❌ 連線失敗，請重新整理頁面', true);
-                }}
-            }}
-            
+        
+           async function initLIFF() {
+    try {
+        await liff.init({ liffId: '{liff_id}' });
+        
+        if (!liff.isLoggedIn()) {
+            showLoginButton();
+            return;
+        }
+        
+        // 方法1：使用 getProfile (原有方式)
+        const profile = await liff.getProfile();
+        console.log('getProfile 得到的 ID:', profile.userId);
+        
+        // 方法2：從 ID Token 獲取 (更可靠)
+        const idToken = liff.getIDToken();
+        console.log('ID Token (前50字):', idToken?.substring(0, 50));
+        
+        // 解碼 ID Token 獲取 user ID
+        if (idToken) {
+            const payload = JSON.parse(atob(idToken.split('.')[1]));
+            console.log('從 ID Token 解碼的 user ID:', payload.sub);
+            lineUserId = payload.sub;  // 使用這個 ID
+        } else {
+            lineUserId = profile.userId;
+        }
+        
+        console.log('最終使用的 user ID:', lineUserId);
+        
+        addSystemMessage('✅ 已連線，開始對話吧！');
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        
+        startPolling();
+    } catch (error) {
+        console.error('LIFF 初始化錯誤:', error);
+        addSystemMessage('❌ 連線失敗，請重新整理頁面', true);
+    }
+}
             function startPolling() {{
                 if (pollInterval) clearInterval(pollInterval);
                 
@@ -960,52 +969,43 @@ def webchat_page():
     '''
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
-    """網頁發送訊息 - 觸發 LINE Push，走原本的 LINE Bot 流程"""
+    """網頁發送訊息 - 觸發 LINE Push"""
     import traceback
     
-    print("=" * 50)
-    print("📨 /webchat/send 被呼叫了！")
-    
-    # 1. 先印出原始請求資訊
-    print(f"Request method: {request.method}")
-    print(f"Request headers: {dict(request.headers)}")
-    print(f"Request data raw: {request.get_data(as_text=True)}")
-    
     try:
-        # 2. 解析 JSON
         data = request.get_json()
-        print(f"Parsed JSON: {data}")
-        
-        if not data:
-            print("❌ 沒有 JSON 資料")
-            return jsonify({'success': False, 'error': '無 JSON 資料'}), 400
-        
         user_id = data.get('user_id')
         message = data.get('message', '').strip()
         
-        print(f"user_id: {user_id}")
-        print(f"message: {message}")
+        print(f"收到請求 - user_id: {user_id}, message: {message}")
         
         if not user_id or not message:
-            print("❌ 缺少參數")
             return jsonify({'success': False, 'error': '缺少參數'}), 400
         
-        # 3. 發送 Push
-        print(f"📤 準備發送 push_message 給 {user_id}...")
-        line_bot_api.push_message(user_id, TextSendMessage(text=message))
-        print(f"✅ push_message 成功！")
+        # 檢查 user_id 格式
+        if not user_id.startswith('U'):
+            print(f"⚠️ 警告：user_id 不是以 U 開頭，格式可能錯誤: {user_id}")
+        
+        # 發送訊息
+        result = line_bot_api.push_message(user_id, TextSendMessage(text=message))
+        print(f"推播成功: {result}")
         
         return jsonify({'success': True})
         
     except Exception as e:
-        print(f"❌ 錯誤: {type(e).__name__}: {str(e)}")
+        error_msg = str(e)
+        print(f"推播失敗: {error_msg}")
         print(traceback.format_exc())
-        return jsonify({
-            'success': False, 
-            'error': str(e),
-            'error_type': type(e).__name__
-        }), 500
-
+        
+        # 提供更友善的錯誤訊息
+        if '400' in error_msg and 'not friends' in error_msg.lower():
+            user_friendly_error = '請先將蕨積加入 LINE 好友'
+        elif '400' in error_msg:
+            user_friendly_error = '使用者 ID 無效，請重新登入'
+        else:
+            user_friendly_error = error_msg
+        
+        return jsonify({'success': False, 'error': user_friendly_error}), 500
 @app.route("/webchat/reply", methods=['GET'])
 def webchat_get_reply():
     """網頁輪詢取得 AI 回覆"""
