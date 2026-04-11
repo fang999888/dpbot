@@ -1,4 +1,4 @@
-# app.py - 蕨積最終完整版（Gemini圖片識別 + 失敗賣萌 + 網頁對話）
+# app.py - 蕨積最終完整版（網頁對話 + LINE Bot 分離）
 import os
 import json
 import requests
@@ -9,7 +9,7 @@ import re
 import base64
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, abort, jsonify, render_template
-from flask_cors import CORS  # 新增
+from flask_cors import CORS
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -27,11 +27,12 @@ import urllib3
 import google.generativeai as genai
 from PIL import Image
 from io import BytesIO
+
 # 抑制 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
-CORS(app)  # 新增，啟用跨域
+CORS(app)
 
 # ==================== 環境變數 ====================
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
@@ -66,7 +67,7 @@ else:
     gemini_vision_model = None
     print("⚠️ 未設定 Gemini API Key，圖片識別功能將無法使用")
 
-# ==================== 網頁對話暫存區 ====================
+# ==================== 網頁對話暫存區（僅供網頁使用）====================
 web_pending_replies = {}  # {user_id: {"reply": "內容", "timestamp": time}}
 
 # ==================== 蕨積賣萌圖片回覆庫 ====================
@@ -173,7 +174,7 @@ def get_watering_advice(weather_data):
     else:
         return "🌿 天氣不錯，正常澆水就好"
 
-# ==================== 專業/賣萌判斷核心（權重版）====================
+# ==================== 專業/賣萌判斷核心 ====================
 PROFESSIONAL_WEIGHTS = {
     "多肉": 3, "龜背芋": 3, "琴葉榕": 3, "虎尾蘭": 3, "仙人掌": 3,
     "蕨類": 3, "觀音蓮": 3, "蔓綠絨": 3, "彩葉芋": 3, "竹芋": 3,
@@ -242,10 +243,6 @@ def get_professional_prompt(user_name=None):
 - 第二句：給具體解決步驟
 - 第三句：預防再次發生
 
-【範例】
-用戶：多肉葉子變軟怎麼辦？
-蕨積：這是典型澆水過多導致的根部問題。建議立即停止澆水，將植株移到通風處，檢查根系是否有腐爛跡象。未來澆水需等土壤完全乾燥再進行。
-
 【鐵則】
 ❌ 禁止：哈哈、喔喔、耶、啦、吧、～、🌿、💚 等任何語氣詞和表情符號
 ✅ 必須：專業、冷靜、準確、有用
@@ -275,7 +272,7 @@ def ask_deepseek(question, user_name=None, is_professional=False):
         forced_question = f"""【重要】你現在是植物學博士，請用極度專業、冷靜、準確的方式回答。禁止使用任何語氣詞、表情符號。回答必須包含原因、解法、預防。
 問題：{question}"""
         system_prompt = get_professional_prompt(user_name)
-        data = {"model": "deepseek-chat", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": forced_question}], "max_tokens": 400, "temperature": 0.1, "top_p": 0.1}
+        data = {"model": "deepseek-chat", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": forced_question}], "max_tokens": 400, "temperature": 0.1}
     else:
         system_prompt = get_casual_prompt(user_name)
         data = {"model": "deepseek-chat", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": question}], "max_tokens": 100, "temperature": 0.9}
@@ -358,7 +355,7 @@ def unsubscribe_user(user_id):
 def get_random_local_fact():
     return random.choice(LOCAL_FACTS)
 
-# ==================== 每日植物小知識（永不重複版）====================
+# ==================== 每日植物小知識 ====================
 _last_fact = None
 
 def get_daily_plant_fact():
@@ -399,7 +396,6 @@ def get_daily_plant_fact():
 
 # ==================== Gemini Vision 圖片識別 ====================
 def analyze_image_with_gemini(image_bytes):
-    """使用Gemini Vision分析圖片，返回描述文字，失敗返回None"""
     if not gemini_vision_model:
         return None
     try:
@@ -480,7 +476,6 @@ def init_scheduler():
     atexit.register(lambda: scheduler.shutdown())
     return scheduler
 
-# 全域啟動排程器
 if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
     try:
         scheduler = init_scheduler()
@@ -512,7 +507,7 @@ def handle_unfollow(event):
     if supabase:
         unsubscribe_user(event.source.user_id)
 
-# ==================== 圖片訊息處理（Gemini識別 + 失敗賣萌）====================
+# ==================== 圖片訊息處理 ====================
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
@@ -528,29 +523,25 @@ def handle_image_message(event):
         if gemini_vision_model:
             result = analyze_image_with_gemini(image_bytes)
             if result:
-                # 儲存回覆給網頁輪詢
-                web_pending_replies[user_id] = {"reply": result, "timestamp": time.time()}
+                # 注意：LINE 的回覆不存入 web_pending_replies，直接回覆
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=result))
                 print(f"📸 用戶 {user_id} 圖片識別成功")
                 return
 
         reply_text = random.choice(SORRY_MESSAGES)
-        # 儲存回覆給網頁輪詢
-        web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
         print(f"📸 用戶 {user_id} 圖片識別失敗，改用賣萌")
 
     except Exception as e:
         print(f"圖片處理失敗: {e}")
         reply_text = random.choice(SORRY_MESSAGES)
-        web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
 
     finally:
         if supabase:
             update_last_active(user_id)
 
-# ==================== 文字訊息處理 ====================
+# ==================== 文字訊息處理（LINE Bot）====================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_message = event.message.text.strip()
@@ -558,12 +549,13 @@ def handle_text_message(event):
     user_id = event.source.user_id
     user_data = None
     user_name = None
+    
     if supabase:
         user_data = get_or_create_user(user_id)
         user_name = user_data.get('user_name') if user_data else None
         update_last_active(user_id)
 
-    # 除錯指令：顯示 User ID
+    # 除錯指令
     if user_message == "我的ID":
         line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你的 LINE Bot User ID: {user_id}"))
         return
@@ -586,7 +578,6 @@ def handle_text_message(event):
         if name and supabase:
             update_user_name(user_id, name)
             reply_text = f"🌿 哈囉 {name}！我記住你了～"
-            web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
@@ -602,7 +593,6 @@ def handle_text_message(event):
         if valid_city and supabase:
             update_user_city(user_id, valid_city)
             reply_text = f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～"
-            web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
@@ -624,7 +614,6 @@ def handle_text_message(event):
                     reply = f"{user_name}，{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 else:
                     reply = f"{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
-                web_pending_replies[user_id] = {"reply": reply, "timestamp": time.time()}
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
                 if user_data and not user_data.get('city') and supabase:
                     update_user_city(user_id, city)
@@ -640,35 +629,31 @@ def handle_text_message(event):
     # 主動查詢小知識
     if any(keyword in user_message for keyword in ["知識", "常識", "小知識", "冷知識"]):
         fact = get_random_local_fact()
-        web_pending_replies[user_id] = {"reply": fact, "timestamp": time.time()}
         line_bot_api.reply_message(reply_token, TextSendMessage(text=fact))
         return
 
-    # 專業判斷
+    # 專業判斷 + AI 回覆
     is_professional = is_professional_question(user_message)
     mode = "🔬 專業模式" if is_professional else "😊 賣萌模式"
     print(f"📝 用戶 {user_id} | {mode} | 問題: {user_message}")
     ai_response = ask_deepseek(user_message, user_name, is_professional)
-    # 儲存回覆給網頁輪詢
-    web_pending_replies[user_id] = {"reply": ai_response, "timestamp": time.time()}
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
 
-# ==================== 網頁對話功能（LIFF + 輪詢）====================
-
+# ==================== 網頁對話 API（僅供網頁使用）====================
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
-    """網頁發送訊息 - 直接呼叫 AI，不走 LINE"""
+    """網頁發送訊息 - 直接呼叫 AI，存入暫存區供輪詢"""
     try:
         data = request.get_json()
         user_id = data.get('user_id')
         message = data.get('message', '').strip()
         
-        print(f"📤 收到網頁訊息 - user_id: {user_id}, message: {message}")
+        print(f"📤 [網頁] 收到訊息 - user_id: {user_id}, message: {message}")
         
         if not user_id or not message:
             return jsonify({'success': False, 'error': '缺少參數'}), 400
         
-        # 從 Supabase 獲取用戶名稱（如果有）
+        # 從 Supabase 獲取用戶名稱
         user_name = None
         if supabase:
             try:
@@ -678,19 +663,20 @@ def webchat_send():
             except:
                 pass
         
-        # 直接呼叫 AI
+        # 呼叫 AI
         is_professional = is_professional_question(message)
         ai_response = ask_deepseek(message, user_name, is_professional)
         
-        print(f"✅ AI 回覆: {ai_response[:50]}...")
+        print(f"✅ [網頁] AI 回覆: {ai_response[:50]}...")
         
-        # 儲存回覆給網頁輪詢
+        # 存入網頁暫存區（僅供網頁輪詢）
         web_pending_replies[user_id] = {"reply": ai_response, "timestamp": time.time()}
+        print(f"💾 [網頁] 已存入暫存區")
         
         return jsonify({'success': True})
         
     except Exception as e:
-        print(f"❌ 錯誤: {str(e)}")
+        print(f"❌ [網頁] 錯誤: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -705,6 +691,7 @@ def webchat_get_reply():
     
     if user_id in web_pending_replies:
         reply_data = web_pending_replies.pop(user_id)
+        print(f"📤 [網頁] 送出回覆給 {user_id}")
         return jsonify({'has_reply': True, 'reply': reply_data['reply']})
     
     return jsonify({'has_reply': False})
@@ -729,7 +716,7 @@ def health():
     scheduler_status = "✅ 運行中" if 'scheduler' in globals() else "⚠️ 未啟動"
     gemini_status = "✅ 已啟用" if gemini_vision_model else "⚠️ 未設定"
     liff_status = "✅ 已設定" if LIFF_ID else "⚠️ 未設定"
-    return f"🌿 蕨積最終版（Gemini圖片 + 網頁對話） | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status} | LIFF: {liff_status}", 200
+    return f"🌿 蕨積 | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status} | LIFF: {liff_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
