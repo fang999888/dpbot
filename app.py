@@ -555,6 +555,18 @@ def handle_image_message(event):
 
 # ==================== 文字訊息處理 ====================
 @handler.add(MessageEvent, message=TextMessage)
+
+def handle_text_message(event):
+    user_message = event.message.text.strip()
+    reply_token = event.reply_token
+    user_id = event.source.user_id  # 這是 LINE Bot Webhook 收到的真實 ID
+    
+    # 臨時除錯：顯示 User ID
+    if user_message == "我的ID":
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你的 LINE Bot User ID: {user_id}"))
+        return
+    
+    # ... 後面是你原本的所有程式碼 ...
 def handle_text_message(event):
     user_message = event.message.text.strip()
     reply_token = event.reply_token
