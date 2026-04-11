@@ -704,7 +704,12 @@ def webchat_get_reply():
         return jsonify({'has_reply': False, 'error': '缺少 user_id'}), 400
     
     if user_id in web_pending_replies:
-        reply_data = web_pending_replies.pop(user_id)
+        reply_data = web_pending_replies[user_id]
+        # 檢查是否過期（超過 30 秒）
+        if time.time() - reply_data['timestamp'] > 30:
+            web_pending_replies.pop(user_id, None)
+            return jsonify({'has_reply': False})
+        # 不回傳 true，保留回覆讓其他人也能讀取
         return jsonify({'has_reply': True, 'reply': reply_data['reply']})
     
     return jsonify({'has_reply': False})
