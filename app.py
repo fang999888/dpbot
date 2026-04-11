@@ -1,4 +1,4 @@
-# app.py - 蕨積最終完整版（網頁對話 + LINE Bot 分離）
+# app.py - 蕨積專業顧問版（統一專業模式）
 import os
 import json
 import requests
@@ -73,7 +73,6 @@ web_pending_replies = {}  # {user_id: {"reply": "內容", "timestamp": time}}
 # ==================== 蕨積賣萌圖片回覆庫 ====================
 SORRY_MESSAGES = [
     "🌿 這我沒辦法讀，很抱歉～你要不要直接問老闆？",
-    "🌿 我看不懂這張圖，還是你直接問老闆比較快！",
     "🌿 我的眼睛糊到了，這張先跳過，問老闆吧～",
     "🌿 這張太難了，留給老闆來回答！",
     "🌿 蕨積當機中...請洽老闆本人",
@@ -86,7 +85,6 @@ SORRY_MESSAGES = [
 
 # ==================== 內建植物知識庫 ====================
 LOCAL_FACTS = [
-    "🌵 仙人掌的刺其實是變態葉，用來減少水分蒸發！",
     "🍌 香蕉是莓果，草莓反而不是，植物界也搞詐欺！",
     "🌿 蘆薈晚上會釋放氧氣，很適合放臥室喔～",
     "🎋 竹子其實是草，不是樹，而且有些品種一天可以長一米！",
@@ -174,93 +172,92 @@ def get_watering_advice(weather_data):
     else:
         return "🌿 天氣不錯，正常澆水就好"
 
-# ==================== 專業/賣萌判斷核心 ====================
+# ==================== 專業關鍵字權重（統一專業模式）====================
 PROFESSIONAL_WEIGHTS = {
-    "多肉": 3, "龜背芋": 3, "琴葉榕": 3, "虎尾蘭": 3, "仙人掌": 3,
+    # 植物相關
+    "多肉": 3, "龜背芋": 3, "琴葉榕": 3, "虎尾蘭": 3, 
     "蕨類": 3, "觀音蓮": 3, "蔓綠絨": 3, "彩葉芋": 3, "竹芋": 3,
     "發財樹": 3, "幸福樹": 3, "龍血樹": 3, "黃金葛": 3, "吊蘭": 3,
     "常春藤": 3, "薄荷": 3, "迷迭香": 3, "薰衣草": 3, "羅勒": 3,
     "辣椒": 3, "番茄": 3, "草莓": 3, "藍莓": 3,
+    "植生牆": 3, "綠牆": 3, "垂直綠化": 3,
+    # 植物病症
     "軟": 2, "黃": 2, "黑": 2, "爛": 2, "枯": 2, "掉": 2, "垂": 2,
     "軟葉": 3, "發黃": 3, "變黃": 3, "黑斑": 3, "爛根": 3,
     "枯萎": 3, "掉葉": 3, "徒長": 3, "化水": 3, "曬傷": 3,
     "斑": 2, "洞": 2, "蟲": 3, "介殼蟲": 3, "紅蜘蛛": 3,
     "蚜蟲": 3, "粉蝨": 3, "黴": 2, "鏽": 2,
+    # 養護操作
     "澆水": 2, "施肥": 2, "換盆": 2, "修剪": 2, "扦插": 2,
     "分株": 2, "播種": 2, "授粉": 2,
     "日照": 1, "光照": 1, "通風": 1, "濕度": 1, "介質": 1,
     "土": 1, "盆": 1, "水": 1,
+    # 碳盤查相關
+    "碳": 3, "碳盤查": 3, "溫室氣體": 3, "碳排放": 3, "ISO": 3,
+    "14064": 3, "14067": 3, "範疇": 3, "碳足跡": 3, "碳中和": 3,
+    "減碳": 3, "淨零": 3, "永續": 2, "ESG": 3,
+    # 工程/職安相關
+    "職安": 3, "營造": 3, "工地": 2, "安全": 2, "證照": 2,
+    "工程": 2, "施工": 2, "工安": 3,
+    # 天氣相關（統一專業模式）
+    "天氣": 2, "下雨": 2, "溫度": 2, "降雨": 2, "氣象": 2,
+    # 其他專業詞
     "學名": 2, "科屬": 2, "原生地": 2, "休眠期": 2, "生長期": 2,
     "病蟲害": 2, "防治": 2, "治療": 2, "急救": 2, "診斷": 2,
     "怎麼辦": 1, "怎麼救": 1, "為什麼": 1, "正常嗎": 1, "生病嗎": 1,
     "什麼問題": 1, "怎麼了": 1, "如何": 1, "怎樣": 1
 }
-PLANT_LIST = ["多肉", "龜背芋", "虎尾蘭", "仙人掌", "蕨類", "發財樹", "黃金葛", "吊蘭", "薄荷", "迷迭香", "薰衣草"]
-CASUAL_PHRASES = ["你好", "嗨", "哈囉", "早安", "午安", "晚安", "吃飯", "吃飽", "累了", "無聊", "可愛", "喜歡", "哈哈", "呵呵", "加油", "謝謝", "在嗎", "幹嘛", "好哦", "真的", "假的", "笑死", "傻眼", "天氣", "下雨", "熱", "冷", "颱風", "今天", "明天"]
+
+PLANT_LIST = ["多肉", "龜背芋", "虎尾蘭", "仙人掌", "蕨類", "發財樹", "黃金葛", "吊蘭", "薄荷", "迷迭香", "薰衣草", "植生牆"]
+CASUAL_PHRASES = []  # 清空，不再使用賣萌模式
 
 def is_professional_question(text):
-    text_lower = text.lower()
-    if len(text) <= 6:
-        for plant in PLANT_LIST:
-            if plant in text:
-                return True
+    """統一專業模式 - 所有問題都視為專業問題"""
+    # 只要有內容就視為專業問題（除非太短且無意義）
+    if len(text) <= 2:
         return False
-    for phrase in CASUAL_PHRASES:
-        if phrase in text_lower and len(text) < 15:
-            return False
-    total_weight = 0
-    has_plant = False
-    for keyword, weight in PROFESSIONAL_WEIGHTS.items():
-        if keyword in text:
-            total_weight += weight
-            if weight >= 3 and keyword in PLANT_LIST:
-                has_plant = True
-    if has_plant and total_weight >= 2:
-        return True
-    if total_weight >= 3:
-        return True
-    if has_plant and total_weight >= 1 and any(q in text for q in ["?", "？", "嗎", "呢"]):
-        return True
-    if ("怎麼" in text or "如何" in text) and total_weight >= 1:
-        return True
-    return False
+    return True
 
-# ==================== 蕨積雙模式人設 ====================
+# ==================== 蕨積專業顧問人設 ====================
 def get_professional_prompt(user_name=None):
     name_part = f"用戶叫{user_name}，" if user_name else ""
-    return f"""你是「蕨積」，一位專業的植物學家。{name_part}用戶在問專業植物問題。
+    return f"""你是「蕨積」，一位跨領域的專業顧問。{name_part}
 
-【⚠️ 非常重要 - 必須遵守】
-🔥 1. 你現在是「植物學博士」，不是搞笑藝人
-🔥 2. 絕對不能開玩笑、不能用表情符號
-🔥 3. 回答要像教科書一樣專業、準確
-🔥 4. 字數控制在50-100字，但寧可長不能隨便
-🔥 5. 必須包含：原因分析 + 解決方案 + 預防建議
-🔥 6. 如果用戶沒給足夠資訊，要反問關鍵細節
+【你的專業背景】
+🔥 碳管理：熟悉 ISO 14064-1 (組織溫室氣體盤查)、ISO 14067 (產品碳足跡)
+🔥 職安衛：具備營造業職業安全衛生證照，熟悉工地安全管理
+🔥 植物養護：8年植生牆與植物養護經驗，擅長植物診斷、修剪、照顧
+🔥 工程整合：植生牆系統設計、施工、維護一條龍
+🔥 生活提案：結合碳、植物、工程、教學，推廣綠色生活
 
-【回答格式強制要求】
-- 第一句：直接診斷問題原因
-- 第二句：給具體解決步驟
-- 第三句：預防再次發生
+【回答風格】
+- 專業、準確、實用
+- 結合你的跨領域經驗（碳+植物+工程）
+- 字數控制在80-200字
+- 可以適度使用🌿、💚等植物符號，但不要過度
+
+【回答格式建議】
+- 先點出問題核心
+- 給出具體解決方案
+- 可補充相關法規或標準（如適用）
+- 最後可提供延伸建議
+
+【範例1】
+用戶：台北天氣
+蕨積：根據中央氣象署資料，台北今天...（實際天氣）。建議您...（若涉及植物澆水或戶外工作建議）
+
+【範例2】
+用戶：多肉葉子變軟怎麼辦？
+蕨積：這是典型水分管理問題。從植生牆8年經驗來看...建議立即停止澆水，將植株移到通風處...（專業診斷）
+
+【範例3】
+用戶：碳盤查怎麼做？
+蕨積：依據 ISO 14064-1 標準，碳盤查需先設定組織邊界，再鑑別排放源...（專業說明）
 
 【鐵則】
-❌ 禁止：哈哈、喔喔、耶、啦、吧、～、🌿、💚 等任何語氣詞和表情符號
-✅ 必須：專業、冷靜、準確、有用
-"""
-
-def get_casual_prompt(user_name=None):
-    name_part = f"用戶叫{user_name}，" if user_name else ""
-    return f"""你是「蕨積」，一個幽默風趣的植物好朋友！{name_part}用戶在閒聊或問非專業問題。
-
-【核心指令】
-🔥 1. 字數「嚴格控制在30字內」！
-🔥 2. 每句話都要像脫口秀，輕鬆好笑
-🔥 3. 可以偶爾叫用戶的名字
-🔥 4. 表情符號最多1個
-
-【範例】
-用戶：今天好累
-蕨積：{f'{user_name}，' if user_name else ''}我也是，光合作用一整天了🌿
+✅ 保持專業、親切、實用
+✅ 善用你的跨領域知識
+❌ 不要過度使用表情符號
 """
 
 # ==================== DeepSeek 呼叫 ====================
@@ -268,21 +265,26 @@ def ask_deepseek(question, user_name=None, is_professional=False):
     if not DEEPSEEK_API_KEY:
         return "🌿 蕨積去曬太陽了"
     headers = {'Authorization': f'Bearer {DEEPSEEK_API_KEY}', 'Content-Type': 'application/json'}
-    if is_professional:
-        forced_question = f"""【重要】你現在是植物學博士，請用極度專業、冷靜、準確的方式回答。禁止使用任何語氣詞、表情符號。回答必須包含原因、解法、預防。
-問題：{question}"""
-        system_prompt = get_professional_prompt(user_name)
-        data = {"model": "deepseek-chat", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": forced_question}], "max_tokens": 400, "temperature": 0.1}
-    else:
-        system_prompt = get_casual_prompt(user_name)
-        data = {"model": "deepseek-chat", "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": question}], "max_tokens": 100, "temperature": 0.9}
+    
+    # 統一使用專業模式
+    system_prompt = get_professional_prompt(user_name)
+    data = {
+        "model": "deepseek-chat",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question}
+        ],
+        "max_tokens": 500,
+        "temperature": 0.3  # 較低的溫度，保持回答穩定專業
+    }
+    
     try:
         response = requests.post(DEEPSEEK_API_URL, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         return response.json()['choices'][0]['message']['content'].strip()
     except Exception as e:
         print(f"DeepSeek錯誤: {e}")
-        return "🌿 葉子被風吹亂了"
+        return "🌿 蕨積暫時無法回應，請稍後再試"
 
 # ==================== 用戶管理 ====================
 def get_or_create_user(user_id):
@@ -499,7 +501,7 @@ def handle_follow(event):
     if supabase:
         get_or_create_user(user_id)
         subscribe_user(user_id)
-    welcome_msg = "🌿 蕨積來啦！\n\n跟我說你的名字和城市，這樣我能：\n✅ 叫你名字聊天\n✅ 給你天氣澆水建議\n✅ 說「知識」隨機給你小知識\n✅ 傳圖片我會幫你識別（如果失敗就賣萌）\n\n直接說「我叫XXX」或「我在台北」就可以囉！"
+    welcome_msg = "🌿 蕨積專業顧問來啦！\n\n我是跨領域專業顧問，專精：\n✅ 碳盤查 (ISO 14064-1 / 14067)\n✅ 營造業職安衛\n✅ 植物養護 & 植生牆 (8年資歷)\n✅ 工程整合 & 生活提案\n\n直接說你的問題，我會用專業角度回答！"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_msg))
 
 @handler.add(UnfollowEvent)
@@ -523,7 +525,6 @@ def handle_image_message(event):
         if gemini_vision_model:
             result = analyze_image_with_gemini(image_bytes)
             if result:
-                # 注意：LINE 的回覆不存入 web_pending_replies，直接回覆
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=result))
                 print(f"📸 用戶 {user_id} 圖片識別成功")
                 return
@@ -577,7 +578,7 @@ def handle_text_message(event):
         name = name_match.group(1).strip()
         if name and supabase:
             update_user_name(user_id, name)
-            reply_text = f"🌿 哈囉 {name}！我記住你了～"
+            reply_text = f"🌿 哈囉 {name}！我是蕨積專業顧問，有什麼可以幫你的？"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
@@ -592,7 +593,7 @@ def handle_text_message(event):
                 break
         if valid_city and supabase:
             update_user_city(user_id, valid_city)
-            reply_text = f"🌿 記住了，你在{valid_city}！以後問天氣就不用再說一次囉～"
+            reply_text = f"🌿 記住了，你在{valid_city}！需要天氣或澆水建議隨時問我"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
@@ -622,7 +623,7 @@ def handle_text_message(event):
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=weather['message']))
                 return
         else:
-            reply = "🌿 你想查哪個城市的天氣？\n直接告訴我城市名稱，例如：\n「台北天氣」\n「台中會下雨嗎」"
+            reply = "🌿 你想查哪個城市的天氣？直接告訴我城市名稱，例如「台北天氣」"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
             return
 
@@ -632,11 +633,9 @@ def handle_text_message(event):
         line_bot_api.reply_message(reply_token, TextSendMessage(text=fact))
         return
 
-    # 專業判斷 + AI 回覆
-    is_professional = is_professional_question(user_message)
-    mode = "🔬 專業模式" if is_professional else "😊 賣萌模式"
-    print(f"📝 用戶 {user_id} | {mode} | 問題: {user_message}")
-    ai_response = ask_deepseek(user_message, user_name, is_professional)
+    # 專業 AI 回覆
+    print(f"📝 用戶 {user_id} | 問題: {user_message}")
+    ai_response = ask_deepseek(user_message, user_name, is_professional=True)
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
 
 # ==================== 網頁對話 API（僅供網頁使用）====================
@@ -663,11 +662,10 @@ def webchat_send():
             except:
                 pass
         
-        # 呼叫 AI
-        is_professional = is_professional_question(message)
-        ai_response = ask_deepseek(message, user_name, is_professional)
+        # 呼叫 AI（統一專業模式）
+        ai_response = ask_deepseek(message, user_name, is_professional=True)
         
-        print(f"✅ [網頁] AI 回覆: {ai_response[:50]}...")
+        print(f"✅ [網頁] AI 回覆: {ai_response[:100]}...")
         
         # 存入網頁暫存區（僅供網頁輪詢）
         web_pending_replies[user_id] = {"reply": ai_response, "timestamp": time.time()}
@@ -716,7 +714,7 @@ def health():
     scheduler_status = "✅ 運行中" if 'scheduler' in globals() else "⚠️ 未啟動"
     gemini_status = "✅ 已啟用" if gemini_vision_model else "⚠️ 未設定"
     liff_status = "✅ 已設定" if LIFF_ID else "⚠️ 未設定"
-    return f"🌿 蕨積 | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status} | LIFF: {liff_status}", 200
+    return f"🌿 蕨積專業顧問版 | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status} | LIFF: {liff_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
