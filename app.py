@@ -23,7 +23,10 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 import atexit
 import urllib3
-
+# Gemini
+import google.generativeai as genai
+from PIL import Image
+from io import BytesIO
 # 抑制 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
