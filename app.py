@@ -958,23 +958,53 @@ def webchat_page():
     </body>
     </html>
     '''
-
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
     """網頁發送訊息 - 觸發 LINE Push，走原本的 LINE Bot 流程"""
-    data = request.get_json()
-    user_id = data.get('user_id')
-    message = data.get('message', '').strip()
+    import traceback
     
-    if not user_id or not message:
-        return jsonify({'success': False, 'error': '缺少參數'}), 400
+    print("=" * 50)
+    print("📨 /webchat/send 被呼叫了！")
+    
+    # 1. 先印出原始請求資訊
+    print(f"Request method: {request.method}")
+    print(f"Request headers: {dict(request.headers)}")
+    print(f"Request data raw: {request.get_data(as_text=True)}")
     
     try:
+        # 2. 解析 JSON
+        data = request.get_json()
+        print(f"Parsed JSON: {data}")
+        
+        if not data:
+            print("❌ 沒有 JSON 資料")
+            return jsonify({'success': False, 'error': '無 JSON 資料'}), 400
+        
+        user_id = data.get('user_id')
+        message = data.get('message', '').strip()
+        
+        print(f"user_id: {user_id}")
+        print(f"message: {message}")
+        
+        if not user_id or not message:
+            print("❌ 缺少參數")
+            return jsonify({'success': False, 'error': '缺少參數'}), 400
+        
+        # 3. 發送 Push
+        print(f"📤 準備發送 push_message 給 {user_id}...")
         line_bot_api.push_message(user_id, TextSendMessage(text=message))
+        print(f"✅ push_message 成功！")
+        
         return jsonify({'success': True})
+        
     except Exception as e:
-        print(f"Push 訊息失敗: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print(f"❌ 錯誤: {type(e).__name__}: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            'success': False, 
+            'error': str(e),
+            'error_type': type(e).__name__
+        }), 500
 
 @app.route("/webchat/reply", methods=['GET'])
 def webchat_get_reply():
