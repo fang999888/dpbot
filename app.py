@@ -33,7 +33,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 app = Flask(__name__)
 CORS(app)  # 新增，啟用跨域
 
-# ==================== 環境變數 ==================
+# ==================== 環境變數 ====================
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
@@ -704,12 +704,7 @@ def webchat_get_reply():
         return jsonify({'has_reply': False, 'error': '缺少 user_id'}), 400
     
     if user_id in web_pending_replies:
-        reply_data = web_pending_replies[user_id]
-        # 檢查是否過期（超過 30 秒）
-        if time.time() - reply_data['timestamp'] > 30:
-            web_pending_replies.pop(user_id, None)
-            return jsonify({'has_reply': False})
-        # 不回傳 true，保留回覆讓其他人也能讀取
+        reply_data = web_pending_replies.pop(user_id)
         return jsonify({'has_reply': True, 'reply': reply_data['reply']})
     
     return jsonify({'has_reply': False})
