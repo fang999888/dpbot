@@ -9,6 +9,7 @@ import re
 import base64
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, abort, jsonify, render_template
+from flask_cors import CORS  # 新增
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -22,15 +23,12 @@ from apscheduler.triggers.cron import CronTrigger
 import pytz
 import atexit
 import urllib3
-# Gemini
-import google.generativeai as genai
-from PIL import Image
-from io import BytesIO
 
 # 抑制 SSL 警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
+CORS(app)  # 新增，啟用跨域
 
 # ==================== 環境變數 ====================
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET')
