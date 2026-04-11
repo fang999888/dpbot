@@ -1,4 +1,4 @@
-# app.py - 蕨積最終完整版（Gemini圖片識別 + 失敗賣萌）
+# app.py - 蕨積最終完整版（Gemini圖片識別 + 失敗賣萌 + 網頁對話）
 import os
 import json
 import requests
@@ -40,6 +40,7 @@ SUPABASE_URL = os.getenv('SUPABASE_URL')
 SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 CWA_API_KEY = os.getenv('CWA_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+LIFF_ID = os.getenv('LIFF_ID', '')  # 新增：LIFF ID
 
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -58,7 +59,6 @@ DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
 # Gemini
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    # 使用最新 vision 模型
     gemini_vision_model = genai.GenerativeModel('gemini-1.5-flash')
     print("✅ Gemini Vision 初始化成功")
 else:
@@ -68,6 +68,9 @@ else:
 # ==================== 圖片暫存區 ====================
 image_temp_store = {}
 pending_vision = {}
+
+# ==================== 網頁對話暫存區 ====================
+web_pending_replies = {}  # {user_id: {"reply": "內容", "timestamp": time}}
 
 # ==================== 蕨積賣萌圖片回覆庫 ====================
 SORRY_MESSAGES = [
@@ -403,16 +406,12 @@ def analyze_image_with_gemini(image_bytes):
     if not gemini_vision_model:
         return None
     try:
-        # 將bytes轉為PIL Image
         img = Image.open(BytesIO(image_bytes))
-        # 轉RGB
         if img.mode != 'RGB':
             img = img.convert('RGB')
-        # 調整大小以減少token（可選）
         max_size = (1024, 1024)
         img.thumbnail(max_size, Image.Resampling.LANCZOS)
 
-        # 提示詞：不限字數和方式
         prompt = "請描述這張圖片中的內容，特別是如果裡面有植物，請告訴我它是什麼植物、有什麼特徵。如果沒有植物，就描述圖片內容。"
 
         response = gemini_vision_model.generate_content([prompt, img])
@@ -524,30 +523,30 @@ def handle_image_message(event):
     message_id = event.message.id
 
     try:
-        # 下載圖片
         message_content = line_bot_api.get_message_content(message_id)
         image_bytes = b''
         for chunk in message_content.iter_content():
             image_bytes += chunk
 
-        # 嘗試用Gemini識別
         if gemini_vision_model:
             result = analyze_image_with_gemini(image_bytes)
             if result:
-                # 識別成功，回傳結果（不限字數和方式）
+                # 儲存回覆給網頁輪詢
+                web_pending_replies[user_id] = {"reply": result, "timestamp": time.time()}
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=result))
                 print(f"📸 用戶 {user_id} 圖片識別成功")
                 return
 
-        # 識別失敗或無Gemini，回傳賣萌訊息
         reply_text = random.choice(SORRY_MESSAGES)
+        # 儲存回覆給網頁輪詢
+        web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
         print(f"📸 用戶 {user_id} 圖片識別失敗，改用賣萌")
 
     except Exception as e:
         print(f"圖片處理失敗: {e}")
-        # 出錯時也賣萌
         reply_text = random.choice(SORRY_MESSAGES)
+        web_pending_replies[user_id] = {"reply": reply_text, "timestamp": time.time()}
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
 
     finally:
@@ -619,6 +618,8 @@ def handle_text_message(event):
                     reply = f"{user_name}，{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 else:
                     reply = f"{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
+                # 儲存回覆給網頁輪詢
+                web_pending_replies[user_id] = {"reply": reply, "timestamp": time.time()}
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
                 if user_data and not user_data.get('city') and supabase:
                     update_user_city(user_id, city)
@@ -634,6 +635,7 @@ def handle_text_message(event):
     # 主動查詢小知識
     if any(keyword in user_message for keyword in ["知識", "常識", "小知識", "冷知識"]):
         fact = get_random_local_fact()
+        web_pending_replies[user_id] = {"reply": fact, "timestamp": time.time()}
         line_bot_api.reply_message(reply_token, TextSendMessage(text=fact))
         return
 
@@ -642,7 +644,268 @@ def handle_text_message(event):
     mode = "🔬 專業模式" if is_professional else "😊 賣萌模式"
     print(f"📝 用戶 {user_id} | {mode} | 問題: {user_message}")
     ai_response = ask_deepseek(user_message, user_name, is_professional)
+    # 儲存回覆給網頁輪詢
+    web_pending_replies[user_id] = {"reply": ai_response, "timestamp": time.time()}
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
+
+# ==================== 網頁對話功能（LIFF + 輪詢）====================
+@app.route("/webchat", methods=['GET'])
+def webchat_page():
+    """提供網頁聊天室介面（含 LIFF）"""
+    liff_id = LIFF_ID if LIFF_ID else '請在環境變數設定LIFF_ID'
+    return f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>蕨積 - 植物AI助手</title>
+        <script src="https://static.line-scdn.net/liff/edge/2.1/sdk.js"></script>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
+                height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }}
+            .chat-container {{
+                width: 90%;
+                max-width: 600px;
+                height: 80vh;
+                background: #f5f0e8;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
+            }}
+            .chat-header {{
+                background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
+                color: white;
+                padding: 20px;
+                text-align: center;
+                font-size: 1.2em;
+                font-weight: bold;
+            }}
+            .chat-messages {{
+                flex: 1;
+                overflow-y: auto;
+                padding: 20px;
+                background: #f5f0e8;
+            }}
+            .message {{
+                margin-bottom: 15px;
+                display: flex;
+            }}
+            .message.user {{ justify-content: flex-end; }}
+            .message.bot {{ justify-content: flex-start; }}
+            .message-content {{
+                max-width: 70%;
+                padding: 10px 15px;
+                border-radius: 18px;
+                word-wrap: break-word;
+            }}
+            .user .message-content {{
+                background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
+                color: white;
+            }}
+            .bot .message-content {{
+                background: white;
+                color: #333;
+                border: 1px solid #ddd;
+            }}
+            .chat-input-area {{
+                display: flex;
+                padding: 20px;
+                background: white;
+                border-top: 1px solid #ddd;
+            }}
+            .chat-input {{
+                flex: 1;
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 25px;
+                outline: none;
+                font-size: 16px;
+            }}
+            .send-button {{
+                margin-left: 10px;
+                padding: 10px 20px;
+                background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
+                color: white;
+                border: none;
+                border-radius: 25px;
+                cursor: pointer;
+                font-size: 16px;
+            }}
+            .send-button:disabled {{
+                opacity: 0.6;
+                cursor: not-allowed;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="chat-container">
+            <div class="chat-header">
+                🌿 蕨積 - 你的植物好朋友
+            </div>
+            <div class="chat-messages" id="messages">
+                <div class="message bot">
+                    <div class="message-content">嗨！我是蕨積🌿<br>可以問我植物問題、查天氣，或傳圖片給我識別！</div>
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" class="chat-input" id="input" placeholder="輸入訊息...">
+                <button class="send-button" id="sendBtn">發送</button>
+            </div>
+        </div>
+
+        <script>
+            let lineUserId = null;
+            let isWaiting = false;
+            let pollInterval = null;
+            
+            const messagesDiv = document.getElementById('messages');
+            const inputEl = document.getElementById('input');
+            const sendBtn = document.getElementById('sendBtn');
+            
+            async function initLIFF() {{
+                await liff.init({{ liffId: '{liff_id}' }});
+                
+                if (!liff.isLoggedIn()) {{
+                    liff.login();
+                    return;
+                }}
+                
+                const profile = await liff.getProfile();
+                lineUserId = profile.userId;
+                console.log('使用者 ID:', lineUserId);
+                startPolling();
+            }}
+            
+            function startPolling() {{
+                if (pollInterval) clearInterval(pollInterval);
+                
+                pollInterval = setInterval(async () => {{
+                    if (!lineUserId) return;
+                    
+                    try {{
+                        const response = await fetch('/webchat/reply?user_id=' + lineUserId);
+                        const data = await response.json();
+                        
+                        if (data.has_reply) {{
+                            addMessage(data.reply, 'bot');
+                            isWaiting = false;
+                            sendBtn.disabled = false;
+                        }}
+                    }} catch (error) {{
+                        console.error('輪詢錯誤:', error);
+                    }}
+                }}, 1500);
+            }}
+            
+            async function sendMessage() {{
+                if (!lineUserId) {{
+                    alert('請先登入 LINE');
+                    return;
+                }}
+                
+                const message = inputEl.value.trim();
+                if (!message || isWaiting) return;
+                
+                addMessage(message, 'user');
+                inputEl.value = '';
+                
+                isWaiting = true;
+                sendBtn.disabled = true;
+                addMessage('🌿 蕨積思考中...', 'bot', true);
+                
+                try {{
+                    const response = await fetch('/webchat/send', {{
+                        method: 'POST',
+                        headers: {{ 'Content-Type': 'application/json' }},
+                        body: JSON.stringify({{ user_id: lineUserId, message: message }})
+                    }});
+                    
+                    const data = await response.json();
+                    
+                    if (!data.success) {{
+                        addMessage('發送失敗，請稍後再試', 'bot');
+                        isWaiting = false;
+                        sendBtn.disabled = false;
+                    }}
+                }} catch (error) {{
+                    console.error('發送錯誤:', error);
+                    addMessage('網路錯誤，請稍後再試', 'bot');
+                    isWaiting = false;
+                    sendBtn.disabled = false;
+                }}
+            }}
+            
+            function addMessage(text, sender, isTemp = false) {{
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message ' + sender;
+                messageDiv.innerHTML = '<div class="message-content">' + text.replace(/\\n/g, '<br>') + '</div>';
+                
+                if (isTemp) {{
+                    messageDiv.id = 'temp-message';
+                }}
+                
+                messagesDiv.appendChild(messageDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                
+                if (isTemp) {{
+                    setTimeout(() => {{
+                        const temp = document.getElementById('temp-message');
+                        if (temp) temp.remove();
+                    }}, 3000);
+                }}
+            }}
+            
+            sendBtn.addEventListener('click', sendMessage);
+            inputEl.addEventListener('keypress', (e) => {{
+                if (e.key === 'Enter') sendMessage();
+            }});
+            
+            initLIFF();
+        </script>
+    </body>
+    </html>
+    '''
+
+@app.route("/webchat/send", methods=['POST'])
+def webchat_send():
+    """網頁發送訊息 - 觸發 LINE Push，走原本的 LINE Bot 流程"""
+    data = request.get_json()
+    user_id = data.get('user_id')
+    message = data.get('message', '').strip()
+    
+    if not user_id or not message:
+        return jsonify({'success': False, 'error': '缺少參數'}), 400
+    
+    try:
+        line_bot_api.push_message(user_id, TextSendMessage(text=message))
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"Push 訊息失敗: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route("/webchat/reply", methods=['GET'])
+def webchat_get_reply():
+    """網頁輪詢取得 AI 回覆"""
+    user_id = request.args.get('user_id')
+    
+    if not user_id:
+        return jsonify({'has_reply': False, 'error': '缺少 user_id'}), 400
+    
+    if user_id in web_pending_replies:
+        reply_data = web_pending_replies.pop(user_id)
+        return jsonify({'has_reply': True, 'reply': reply_data['reply']})
+    
+    return jsonify({'has_reply': False})
 
 # ==================== 測試端點 ====================
 @app.route("/test-push", methods=['GET'])
@@ -663,7 +926,8 @@ def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中" if 'scheduler' in globals() else "⚠️ 未啟動"
     gemini_status = "✅ 已啟用" if gemini_vision_model else "⚠️ 未設定"
-    return f"🌿 蕨積最終版（Gemini圖片） | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status}", 200
+    liff_status = "✅ 已設定" if LIFF_ID else "⚠️ 未設定"
+    return f"🌿 蕨積最終版（Gemini圖片 + 網頁對話） | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status} | LIFF: {liff_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
