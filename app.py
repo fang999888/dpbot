@@ -651,10 +651,6 @@ def handle_text_message(event):
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
 
 # ==================== 網頁對話功能（LIFF + 輪詢）====================
-@app.route("/webchat", methods=['GET'])
-def webchat_page():
-    """提供網頁聊天室介面（含 LIFF）"""
-    return render_template('webchat.html', liff_id=LIFF_ID)
 
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
