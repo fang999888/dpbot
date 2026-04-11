@@ -191,70 +191,73 @@
         }
         
         function startPolling() {
-            if (pollInterval) clearInterval(pollInterval);
-            
-            pollInterval = setInterval(async function() {
-                if (!lineUserId) return;
-                
-                try {
-                    var response = await fetch('/webchat/reply?user_id=' + lineUserId);
-                    var data = await response.json();
-                    
-                    if (data.has_reply) {
-                        var tempMsg = document.getElementById('temp-message');
-                        if (tempMsg) tempMsg.remove();
-                        
-                        addMessage(data.reply, 'bot');
-                        isWaiting = false;
-                        sendBtn.disabled = false;
-                    }
-                } catch (error) {
-                    console.error('Polling error:', error);
-                }
-            }, 1500);
-        }
+    if (pollInterval) clearInterval(pollInterval);
+    
+    pollInterval = setInterval(async function() {
+        if (!lineUserId) return;
         
-        async function sendMessage() {
-            if (!lineUserId) {
-                alert('Please login to LINE first');
-                return;
-            }
+        try {
+            var response = await fetch('/webchat/reply?user_id=' + lineUserId);
+            var data = await response.json();
             
-            var message = inputEl.value.trim();
-            if (!message || isWaiting) return;
-            
-            addMessage(message, 'user');
-            inputEl.value = '';
-            
-            isWaiting = true;
-            sendBtn.disabled = true;
-            addMessage('Thinking...', 'bot', true);
-            
-            try {
-                var response = await fetch('/webchat/send', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ user_id: lineUserId, message: message })
-                });
-                
-                var data = await response.json();
-                
-                if (!data.success) {
-                    var tempMsg = document.getElementById('temp-message');
-                    if (tempMsg) tempMsg.remove();
-                    addMessage('Failed: ' + (data.error || 'Unknown error'), 'bot');
-                    isWaiting = false;
-                    sendBtn.disabled = false;
-                }
-            } catch (error) {
-                console.error('Send error:', error);
+            if (data.has_reply) {
+                // 移除 Thinking 訊息
                 var tempMsg = document.getElementById('temp-message');
                 if (tempMsg) tempMsg.remove();
-                addMessage('Network error', 'bot');
+                
+                // 顯示 AI 回覆
+                addMessage(data.reply, 'bot');
                 isWaiting = false;
                 sendBtn.disabled = false;
             }
+        } catch (error) {
+            console.error('Polling error:', error);
         }
+    }, 1500);
+}
+        
+       async function sendMessage() {
+    if (!lineUserId) {
+        alert('Please login to LINE first');
+        return;
+    }
+    
+    var message = inputEl.value.trim();
+    if (!message || isWaiting) return;
+    
+    addMessage(message, 'user');
+    inputEl.value = '';
+    
+    isWaiting = true;
+    sendBtn.disabled = true;
+    var thinkingMsg = addMessage('Thinking...', 'bot', true);
+    
+    try {
+        var response = await fetch('/webchat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_id: lineUserId, message: message })
+        });
+        
+        var data = await response.json();
+        console.log('Send response:', data);
+        
+        if (!data.success) {
+            if (thinkingMsg) thinkingMsg.remove();
+            addMessage('Failed: ' + (data.error || 'Unknown error'), 'bot');
+            isWaiting = false;
+            sendBtn.disabled = false;
+        }
+        // 成功時保留 Thinking，等輪詢取代
+        
+    } catch (error) {
+        console.error('Send error:', error);
+        if (thinkingMsg) thinkingMsg.remove();
+        addMessage('Network error', 'bot');
+        isWaiting = false;
+        sendBtn.disabled = false;
+    }
+}
         
         function addMessage(text, sender, isTemp) {
             var messageDiv = document.createElement('div');
