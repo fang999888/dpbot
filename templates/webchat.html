@@ -98,7 +98,10 @@
         }
     </style>
 </head>
-<body>
+<body><div class="chat-header">
+    🌿 蕨積 - 你的植物好朋友
+    <button id="logoutBtn" style="float: right; background: rgba(255,255,255,0.2); border: none; color: white; padding: 5px 10px; border-radius: 10px; cursor: pointer; font-size: 12px;">登出</button>
+</div>
     <div class="chat-container">
         <div class="chat-header">
             🌿 蕨積 - 你的植物好朋友
@@ -124,7 +127,12 @@
         var sendBtn = document.getElementById('sendBtn');
         
         var LIFF_ID = '{{ liff_id }}';
-        
+        document.getElementById('logoutBtn').addEventListener('click', function() {
+    if (confirm('確定要登出嗎？')) {
+        liff.logout();
+        window.location.reload();
+    }
+});
         function addSystemMessage(text, isError) {
             var msgDiv = document.createElement('div');
             msgDiv.className = 'system-message';
