@@ -745,40 +745,12 @@ def webchat_page():
                 opacity: 0.6;
                 cursor: not-allowed;
             }}
-            .login-btn {{
-                display: block;
-                margin: 30px auto;
-                padding: 14px 28px;
-                background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
-                color: white;
-                border: none;
-                border-radius: 30px;
-                font-size: 18px;
-                font-weight: bold;
-                cursor: pointer;
-                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            }}
-            .login-btn:hover {{
-                transform: scale(1.02);
-            }}
             .system-message {{
                 text-align: center;
-                font-size: 14px;
+                font-size: 12px;
                 color: #888;
-                padding: 10px;
+                padding: 5px;
                 font-style: italic;
-            }}
-            .login-container {{
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                height: 100%;
-                padding: 20px;
-            }}
-            .login-icon {{
-                font-size: 64px;
-                margin-bottom: 20px;
             }}
         </style>
     </head>
@@ -807,77 +779,63 @@ def webchat_page():
             const inputEl = document.getElementById('input');
             const sendBtn = document.getElementById('sendBtn');
             
-            function addSystemMessage(text, isError = false) {{
+            function addSystemMessage(text, isError) {{
                 const msgDiv = document.createElement('div');
                 msgDiv.className = 'system-message';
-                msgDiv.style.color = isError ? '#c62828' : '#6b8c42';
+                if (isError) msgDiv.style.color = '#c62828';
                 msgDiv.innerText = text;
                 messagesDiv.appendChild(msgDiv);
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             }}
             
             function showLoginButton() {{
-                // 清空訊息區域，顯示登入畫面
                 messagesDiv.innerHTML = '';
-                
                 const container = document.createElement('div');
-                container.className = 'login-container';
+                container.style.cssText = 'display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding:20px;';
                 container.innerHTML = `
-                    <div class="login-icon">🌿</div>
-                    <div style="text-align: center; margin-bottom: 20px; color: #4a7c23;">
+                    <div style="font-size:64px; margin-bottom:20px;">🌿</div>
+                    <div style="text-align:center; margin-bottom:20px; color:#4a7c23;">
                         <strong>歡迎來到蕨積</strong><br>
                         請先登入 LINE 開始對話
                     </div>
-                    <button class="login-btn" id="lineLoginBtn">🔐 登入 LINE</button>
-                    <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #aaa;">
-                        登入後即可詢問植物問題、查天氣
-                    </div>
+                    <button id="lineLoginBtn" style="padding:14px 28px; background:linear-gradient(135deg,#2d5016 0%,#4a7c23 100%); color:white; border:none; border-radius:30px; font-size:18px; cursor:pointer;">🔐 登入 LINE</button>
                 `;
                 messagesDiv.appendChild(container);
-                
-                document.getElementById('lineLoginBtn').onclick = () => {{
-                    liff.login();
-                }};
+                document.getElementById('lineLoginBtn').onclick = () => liff.login();
             }}
-        
-           async function initLIFF() {
-    try {
-        await liff.init({ liffId: '{liff_id}' });
-        
-        if (!liff.isLoggedIn()) {
-            showLoginButton();
-            return;
-        }
-        
-        // 方法1：使用 getProfile (原有方式)
-        const profile = await liff.getProfile();
-        console.log('getProfile 得到的 ID:', profile.userId);
-        
-        // 方法2：從 ID Token 獲取 (更可靠)
-        const idToken = liff.getIDToken();
-        console.log('ID Token (前50字):', idToken?.substring(0, 50));
-        
-        // 解碼 ID Token 獲取 user ID
-        if (idToken) {
-            const payload = JSON.parse(atob(idToken.split('.')[1]));
-            console.log('從 ID Token 解碼的 user ID:', payload.sub);
-            lineUserId = payload.sub;  // 使用這個 ID
-        } else {
-            lineUserId = profile.userId;
-        }
-        
-        console.log('最終使用的 user ID:', lineUserId);
-        
-        addSystemMessage('✅ 已連線，開始對話吧！');
-        inputEl.disabled = false;
-        sendBtn.disabled = false;
-        
-        startPolling();
-    } catch (error) {
-        console.error('LIFF 初始化錯誤:', error);
-        addSystemMessage('❌ 連線失敗，請重新整理頁面', true);
-    }
-}
+            
+            async function initLIFF() {{
+                try {{
+                    await liff.init({{ liffId: '{liff_id}' }});
+                    
+                    if (!liff.isLoggedIn()) {{
+                        showLoginButton();
+                        return;
+                    }}
+                    
+                    const profile = await liff.getProfile();
+                    const idToken = liff.getIDToken();
+                    
+                    if (idToken) {{
+                        const payload = JSON.parse(atob(idToken.split('.')[1]));
+                        lineUserId = payload.sub;
+                    }} else {{
+                        lineUserId = profile.userId;
+                    }}
+                    
+                    console.log('使用者 ID:', lineUserId);
+                    
+                    addSystemMessage('✅ 已連線，開始對話吧！', false);
+                    inputEl.disabled = false;
+                    sendBtn.disabled = false;
+                    
+                    startPolling();
+                }} catch (error) {{
+                    console.error('LIFF 初始化錯誤:', error);
+                    addSystemMessage('❌ 連線失敗，請重新整理頁面', true);
+                }}
+            }}
+            
             function startPolling() {{
                 if (pollInterval) clearInterval(pollInterval);
                 
@@ -889,6 +847,9 @@ def webchat_page():
                         const data = await response.json();
                         
                         if (data.has_reply) {{
+                            const tempMsg = document.getElementById('temp-message');
+                            if (tempMsg) tempMsg.remove();
+                            
                             addMessage(data.reply, 'bot');
                             isWaiting = false;
                             sendBtn.disabled = false;
@@ -925,19 +886,23 @@ def webchat_page():
                     const data = await response.json();
                     
                     if (!data.success) {{
-                        addMessage('發送失敗，請稍後再試', 'bot');
+                        const tempMsg = document.getElementById('temp-message');
+                        if (tempMsg) tempMsg.remove();
+                        addMessage('❌ ' + (data.error || '發送失敗'), 'bot');
                         isWaiting = false;
                         sendBtn.disabled = false;
                     }}
                 }} catch (error) {{
                     console.error('發送錯誤:', error);
-                    addMessage('網路錯誤，請稍後再試', 'bot');
+                    const tempMsg = document.getElementById('temp-message');
+                    if (tempMsg) tempMsg.remove();
+                    addMessage('❌ 網路錯誤', 'bot');
                     isWaiting = false;
                     sendBtn.disabled = false;
                 }}
             }}
             
-            function addMessage(text, sender, isTemp = false) {{
+            function addMessage(text, sender, isTemp) {{
                 const messageDiv = document.createElement('div');
                 messageDiv.className = 'message ' + sender;
                 messageDiv.innerHTML = '<div class="message-content">' + text.replace(/\\n/g, '<br>') + '</div>';
@@ -948,13 +913,6 @@ def webchat_page():
                 
                 messagesDiv.appendChild(messageDiv);
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                
-                if (isTemp) {{
-                    setTimeout(() => {{
-                        const temp = document.getElementById('temp-message');
-                        if (temp) temp.remove();
-                    }}, 3000);
-                }}
             }}
             
             sendBtn.addEventListener('click', sendMessage);
