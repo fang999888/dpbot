@@ -665,7 +665,8 @@ def handle_text_message(event):
 def webchat_page():
     """提供網頁聊天室介面（含 LIFF）"""
     liff_id = LIFF_ID if LIFF_ID else '請在環境變數設定LIFF_ID'
-    return f'''
+    
+    html_content = '''
     <!DOCTYPE html>
     <html>
     <head>
@@ -674,16 +675,16 @@ def webchat_page():
         <title>蕨積 - 植物AI助手</title>
         <script src="https://static.line-scdn.net/liff/edge/2.1/sdk.js"></script>
         <style>
-            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            body {{
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
                 height: 100vh;
                 display: flex;
                 justify-content: center;
                 align-items: center;
-            }}
-            .chat-container {{
+            }
+            .chat-container {
                 width: 90%;
                 max-width: 600px;
                 height: 80vh;
@@ -693,57 +694,57 @@ def webchat_page():
                 display: flex;
                 flex-direction: column;
                 overflow: hidden;
-            }}
-            .chat-header {{
+            }
+            .chat-header {
                 background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
                 color: white;
                 padding: 20px;
                 text-align: center;
                 font-size: 1.2em;
                 font-weight: bold;
-            }}
-            .chat-messages {{
+            }
+            .chat-messages {
                 flex: 1;
                 overflow-y: auto;
                 padding: 20px;
                 background: #f5f0e8;
-            }}
-            .message {{
+            }
+            .message {
                 margin-bottom: 15px;
                 display: flex;
-            }}
-            .message.user {{ justify-content: flex-end; }}
-            .message.bot {{ justify-content: flex-start; }}
-            .message-content {{
+            }
+            .message.user { justify-content: flex-end; }
+            .message.bot { justify-content: flex-start; }
+            .message-content {
                 max-width: 70%;
                 padding: 10px 15px;
                 border-radius: 18px;
                 word-wrap: break-word;
-            }}
-            .user .message-content {{
+            }
+            .user .message-content {
                 background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
                 color: white;
-            }}
-            .bot .message-content {{
+            }
+            .bot .message-content {
                 background: white;
                 color: #333;
                 border: 1px solid #ddd;
-            }}
-            .chat-input-area {{
+            }
+            .chat-input-area {
                 display: flex;
                 padding: 20px;
                 background: white;
                 border-top: 1px solid #ddd;
-            }}
-            .chat-input {{
+            }
+            .chat-input {
                 flex: 1;
                 padding: 10px;
                 border: 1px solid #ddd;
                 border-radius: 25px;
                 outline: none;
                 font-size: 16px;
-            }}
-            .send-button {{
+            }
+            .send-button {
                 margin-left: 10px;
                 padding: 10px 20px;
                 background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
@@ -752,18 +753,18 @@ def webchat_page():
                 border-radius: 25px;
                 cursor: pointer;
                 font-size: 16px;
-            }}
-            .send-button:disabled {{
+            }
+            .send-button:disabled {
                 opacity: 0.6;
                 cursor: not-allowed;
-            }}
-            .system-message {{
+            }
+            .system-message {
                 text-align: center;
                 font-size: 12px;
                 color: #888;
                 padding: 5px;
                 font-style: italic;
-            }}
+            }
         </style>
     </head>
     <body>
@@ -781,169 +782,174 @@ def webchat_page():
                 <button class="send-button" id="sendBtn" disabled>發送</button>
             </div>
         </div>
-<script>
-    let lineUserId = null;
-    let isWaiting = false;
-    let pollInterval = null;
-    
-    const messagesDiv = document.getElementById('messages');
-    const inputEl = document.getElementById('input');
-    const sendBtn = document.getElementById('sendBtn');
-    
-    function addSystemMessage(text, isError) {
-        var msgDiv = document.createElement('div');
-        msgDiv.className = 'system-message';
-        if (isError) msgDiv.style.color = '#c62828';
-        msgDiv.innerText = text;
-        messagesDiv.appendChild(msgDiv);
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-    
-    function showLoginButton() {
-        messagesDiv.innerHTML = '';
-        var container = document.createElement('div');
-        container.style.cssText = 'display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding:20px;';
-        container.innerHTML = '<div style="font-size:64px; margin-bottom:20px;">🌿</div>' +
-            '<div style="text-align:center; margin-bottom:20px; color:#4a7c23;"><strong>歡迎來到蕨積</strong><br>請先登入 LINE 開始對話</div>' +
-            '<button id="lineLoginBtn" style="padding:14px 28px; background:linear-gradient(135deg,#2d5016 0%,#4a7c23 100%); color:white; border:none; border-radius:30px; font-size:18px; cursor:pointer;">🔐 登入 LINE</button>';
-        messagesDiv.appendChild(container);
-        document.getElementById('lineLoginBtn').onclick = function() { liff.login(); };
-    }
-    
-    async function initLIFF() {
-        try {
-            await liff.init({ liffId: '{liff_id}' });
+
+        <script>
+            var lineUserId = null;
+            var isWaiting = false;
+            var pollInterval = null;
             
-            if (!liff.isLoggedIn()) {
-                showLoginButton();
-                return;
+            var messagesDiv = document.getElementById('messages');
+            var inputEl = document.getElementById('input');
+            var sendBtn = document.getElementById('sendBtn');
+            
+            var LIFF_ID = '''' + liff_id + '''';
+            
+            function addSystemMessage(text, isError) {
+                var msgDiv = document.createElement('div');
+                msgDiv.className = 'system-message';
+                if (isError) msgDiv.style.color = '#c62828';
+                msgDiv.innerText = text;
+                messagesDiv.appendChild(msgDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
             }
             
-            var idToken = liff.getIDToken();
-            if (!idToken) {
-                addSystemMessage('Cannot get ID token, please re-login', true);
-                liff.logout();
-                liff.login();
-                return;
+            function showLoginButton() {
+                messagesDiv.innerHTML = '';
+                var container = document.createElement('div');
+                container.style.cssText = 'display:flex; flex-direction:column; align-items:center; justify-content:center; height:100%; padding:20px;';
+                container.innerHTML = '<div style="font-size:64px; margin-bottom:20px;">🌿</div>' +
+                    '<div style="text-align:center; margin-bottom:20px; color:#4a7c23;"><strong>歡迎來到蕨積</strong><br>請先登入 LINE 開始對話</div>' +
+                    '<button id="lineLoginBtn" style="padding:14px 28px; background:linear-gradient(135deg,#2d5016 0%,#4a7c23 100%); color:white; border:none; border-radius:30px; font-size:18px; cursor:pointer;">🔐 登入 LINE</button>';
+                messagesDiv.appendChild(container);
+                document.getElementById('lineLoginBtn').onclick = function() { liff.login(); };
             }
             
-            var payloadBase64 = idToken.split('.')[1];
-            var payloadJson = atob(payloadBase64);
-            var payload = JSON.parse(payloadJson);
-            var correctUserId = payload.sub;
-            
-            console.log('User ID from ID Token:', correctUserId);
-            
-            if (!correctUserId.startsWith('U')) {
-                console.error('Invalid User ID format:', correctUserId);
-                addSystemMessage('Invalid User ID format', true);
-                return;
+            async function initLIFF() {
+                try {
+                    await liff.init({ liffId: LIFF_ID });
+                    
+                    if (!liff.isLoggedIn()) {
+                        showLoginButton();
+                        return;
+                    }
+                    
+                    var idToken = liff.getIDToken();
+                    if (!idToken) {
+                        addSystemMessage('Cannot get ID token, please re-login', true);
+                        liff.logout();
+                        liff.login();
+                        return;
+                    }
+                    
+                    var payloadBase64 = idToken.split('.')[1];
+                    var payloadJson = atob(payloadBase64);
+                    var payload = JSON.parse(payloadJson);
+                    var correctUserId = payload.sub;
+                    
+                    console.log('User ID from ID Token:', correctUserId);
+                    
+                    if (!correctUserId.startsWith('U')) {
+                        console.error('Invalid User ID format:', correctUserId);
+                        addSystemMessage('Invalid User ID format', true);
+                        return;
+                    }
+                    
+                    lineUserId = correctUserId;
+                    console.log('Final User ID:', lineUserId);
+                    
+                    addSystemMessage('Connected! Start chatting.', false);
+                    inputEl.disabled = false;
+                    sendBtn.disabled = false;
+                    
+                    startPolling();
+                    
+                } catch (error) {
+                    console.error('LIFF init error:', error);
+                    addSystemMessage('Connection failed, please refresh', true);
+                }
             }
             
-            lineUserId = correctUserId;
-            console.log('Final User ID:', lineUserId);
-            
-            addSystemMessage('Connected! Start chatting.', false);
-            inputEl.disabled = false;
-            sendBtn.disabled = false;
-            
-            startPolling();
-            
-        } catch (error) {
-            console.error('LIFF init error:', error);
-            addSystemMessage('Connection failed, please refresh', true);
-        }
-    }
-    
-    function startPolling() {
-        if (pollInterval) clearInterval(pollInterval);
-        
-        pollInterval = setInterval(async function() {
-            if (!lineUserId) return;
-            
-            try {
-                var response = await fetch('/webchat/reply?user_id=' + lineUserId);
-                var data = await response.json();
+            function startPolling() {
+                if (pollInterval) clearInterval(pollInterval);
                 
-                if (data.has_reply) {
+                pollInterval = setInterval(async function() {
+                    if (!lineUserId) return;
+                    
+                    try {
+                        var response = await fetch('/webchat/reply?user_id=' + lineUserId);
+                        var data = await response.json();
+                        
+                        if (data.has_reply) {
+                            var tempMsg = document.getElementById('temp-message');
+                            if (tempMsg) tempMsg.remove();
+                            
+                            addMessage(data.reply, 'bot');
+                            isWaiting = false;
+                            sendBtn.disabled = false;
+                        }
+                    } catch (error) {
+                        console.error('Polling error:', error);
+                    }
+                }, 1500);
+            }
+            
+            async function sendMessage() {
+                if (!lineUserId) {
+                    alert('Please login to LINE first');
+                    return;
+                }
+                
+                var message = inputEl.value.trim();
+                if (!message || isWaiting) return;
+                
+                addMessage(message, 'user');
+                inputEl.value = '';
+                
+                isWaiting = true;
+                sendBtn.disabled = true;
+                addMessage('Thinking...', 'bot', true);
+                
+                try {
+                    var response = await fetch('/webchat/send', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ user_id: lineUserId, message: message })
+                    });
+                    
+                    var data = await response.json();
+                    
+                    if (!data.success) {
+                        var tempMsg = document.getElementById('temp-message');
+                        if (tempMsg) tempMsg.remove();
+                        addMessage('Failed: ' + (data.error || 'Unknown error'), 'bot');
+                        isWaiting = false;
+                        sendBtn.disabled = false;
+                    }
+                } catch (error) {
+                    console.error('Send error:', error);
                     var tempMsg = document.getElementById('temp-message');
                     if (tempMsg) tempMsg.remove();
-                    
-                    addMessage(data.reply, 'bot');
+                    addMessage('Network error', 'bot');
                     isWaiting = false;
                     sendBtn.disabled = false;
                 }
-            } catch (error) {
-                console.error('Polling error:', error);
             }
-        }, 1500);
-    }
-    
-    async function sendMessage() {
-        if (!lineUserId) {
-            alert('Please login to LINE first');
-            return;
-        }
-        
-        var message = inputEl.value.trim();
-        if (!message || isWaiting) return;
-        
-        addMessage(message, 'user');
-        inputEl.value = '';
-        
-        isWaiting = true;
-        sendBtn.disabled = true;
-        addMessage('Thinking...', 'bot', true);
-        
-        try {
-            var response = await fetch('/webchat/send', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: lineUserId, message: message })
+            
+            function addMessage(text, sender, isTemp) {
+                var messageDiv = document.createElement('div');
+                messageDiv.className = 'message ' + sender;
+                messageDiv.innerHTML = '<div class="message-content">' + text.replace(/\\n/g, '<br>') + '</div>';
+                
+                if (isTemp) {
+                    messageDiv.id = 'temp-message';
+                }
+                
+                messagesDiv.appendChild(messageDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }
+            
+            sendBtn.addEventListener('click', sendMessage);
+            inputEl.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter' && !inputEl.disabled) sendMessage();
             });
             
-            var data = await response.json();
-            
-            if (!data.success) {
-                var tempMsg = document.getElementById('temp-message');
-                if (tempMsg) tempMsg.remove();
-                addMessage('Failed: ' + (data.error || 'Unknown error'), 'bot');
-                isWaiting = false;
-                sendBtn.disabled = false;
-            }
-        } catch (error) {
-            console.error('Send error:', error);
-            var tempMsg = document.getElementById('temp-message');
-            if (tempMsg) tempMsg.remove();
-            addMessage('Network error', 'bot');
-            isWaiting = false;
-            sendBtn.disabled = false;
-        }
-    }
-    
-    function addMessage(text, sender, isTemp) {
-        var messageDiv = document.createElement('div');
-        messageDiv.className = 'message ' + sender;
-        messageDiv.innerHTML = '<div class="message-content">' + text.replace(/\n/g, '<br>') + '</div>';
-        
-        if (isTemp) {
-            messageDiv.id = 'temp-message';
-        }
-        
-        messagesDiv.appendChild(messageDiv);
-        messagesDiv.scrollTop = messagesDiv.scrollHeight;
-    }
-    
-    sendBtn.addEventListener('click', sendMessage);
-    inputEl.addEventListener('keypress', function(e) {
-        if (e.key === 'Enter' && !inputEl.disabled) sendMessage();
-    });
-    
-    initLIFF();
-</script>
+            initLIFF();
+        </script>
     </body>
     </html>
-    '''
+    '''.replace(''' + liff_id + '''', liff_id)
+    
+    return html_content
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
     """網頁發送訊息 - 觸發 LINE Push"""
