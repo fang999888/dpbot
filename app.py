@@ -745,6 +745,41 @@ def webchat_page():
                 opacity: 0.6;
                 cursor: not-allowed;
             }}
+            .login-btn {{
+                display: block;
+                margin: 30px auto;
+                padding: 14px 28px;
+                background: linear-gradient(135deg, #2d5016 0%, #4a7c23 100%);
+                color: white;
+                border: none;
+                border-radius: 30px;
+                font-size: 18px;
+                font-weight: bold;
+                cursor: pointer;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            }}
+            .login-btn:hover {{
+                transform: scale(1.02);
+            }}
+            .system-message {{
+                text-align: center;
+                font-size: 14px;
+                color: #888;
+                padding: 10px;
+                font-style: italic;
+            }}
+            .login-container {{
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100%;
+                padding: 20px;
+            }}
+            .login-icon {{
+                font-size: 64px;
+                margin-bottom: 20px;
+            }}
         </style>
     </head>
     <body>
@@ -754,12 +789,12 @@ def webchat_page():
             </div>
             <div class="chat-messages" id="messages">
                 <div class="message bot">
-                    <div class="message-content">嗨！我是蕨積🌿<br>可以問我植物問題、查天氣，或傳圖片給我識別！</div>
+                    <div class="message-content">嗨！我是蕨積🌿<br>可以問我植物問題、查天氣～</div>
                 </div>
             </div>
             <div class="chat-input-area">
-                <input type="text" class="chat-input" id="input" placeholder="輸入訊息...">
-                <button class="send-button" id="sendBtn">發送</button>
+                <input type="text" class="chat-input" id="input" placeholder="輸入訊息..." disabled>
+                <button class="send-button" id="sendBtn" disabled>發送</button>
             </div>
         </div>
 
@@ -772,18 +807,66 @@ def webchat_page():
             const inputEl = document.getElementById('input');
             const sendBtn = document.getElementById('sendBtn');
             
-            async function initLIFF() {{
-                await liff.init({{ liffId: '{liff_id}' }});
+            function addSystemMessage(text, isError = false) {{
+                const msgDiv = document.createElement('div');
+                msgDiv.className = 'system-message';
+                msgDiv.style.color = isError ? '#c62828' : '#6b8c42';
+                msgDiv.innerText = text;
+                messagesDiv.appendChild(msgDiv);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            }}
+            
+            function showLoginButton() {{
+                // 清空訊息區域，顯示登入畫面
+                messagesDiv.innerHTML = '';
                 
-                if (!liff.isLoggedIn()) {{
+                const container = document.createElement('div');
+                container.className = 'login-container';
+                container.innerHTML = `
+                    <div class="login-icon">🌿</div>
+                    <div style="text-align: center; margin-bottom: 20px; color: #4a7c23;">
+                        <strong>歡迎來到蕨積</strong><br>
+                        請先登入 LINE 開始對話
+                    </div>
+                    <button class="login-btn" id="lineLoginBtn">🔐 登入 LINE</button>
+                    <div style="text-align: center; margin-top: 20px; font-size: 12px; color: #aaa;">
+                        登入後即可詢問植物問題、查天氣
+                    </div>
+                `;
+                messagesDiv.appendChild(container);
+                
+                document.getElementById('lineLoginBtn').onclick = () => {{
                     liff.login();
-                    return;
+                }};
+            }}
+            
+            async function initLIFF() {{
+                try {{
+                    await liff.init({{ liffId: '{liff_id}' }});
+                    
+                    if (!liff.isLoggedIn()) {{
+                        // 未登入：顯示登入按鈕
+                        showLoginButton();
+                        return;
+                    }}
+                    
+                    // 已登入：取得使用者資料
+                    const profile = await liff.getProfile();
+                    lineUserId = profile.userId;
+                    console.log('使用者 ID:', lineUserId);
+                    
+                    addSystemMessage('✅ 已連線，開始對話吧！');
+                    
+                    // 啟用輸入框和發送按鈕
+                    inputEl.disabled = false;
+                    sendBtn.disabled = false;
+                    
+                    startPolling();
+                    
+                }} catch (error) {{
+                    console.error('LIFF 初始化錯誤:', error);
+                    addSystemMessage('❌ 連線失敗，請重新整理頁面', true);
                 }}
-                
-                const profile = await liff.getProfile();
-                lineUserId = profile.userId;
-                console.log('使用者 ID:', lineUserId);
-                startPolling();
             }}
             
             function startPolling() {{
@@ -867,7 +950,7 @@ def webchat_page():
             
             sendBtn.addEventListener('click', sendMessage);
             inputEl.addEventListener('keypress', (e) => {{
-                if (e.key === 'Enter') sendMessage();
+                if (e.key === 'Enter' && !inputEl.disabled) sendMessage();
             }});
             
             initLIFF();
