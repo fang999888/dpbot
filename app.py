@@ -660,25 +660,42 @@ def webchat_page():
 
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
-    """網頁發送訊息 - 觸發 LINE Push，走原本的 LINE Bot 流程"""
+    """網頁發送訊息 - 直接呼叫 AI，不走 LINE"""
     try:
         data = request.get_json()
         user_id = data.get('user_id')
         message = data.get('message', '').strip()
         
-        print(f"📤 收到推播請求 - user_id: {user_id}, message: {message}")
+        print(f"📤 收到網頁訊息 - user_id: {user_id}, message: {message}")
         
         if not user_id or not message:
             return jsonify({'success': False, 'error': '缺少參數'}), 400
         
-        # 發送 LINE Push 訊息
-        line_bot_api.push_message(user_id, TextSendMessage(text=message))
-        print(f"✅ 推播成功給 {user_id}")
+        # 從 Supabase 獲取用戶名稱（如果有）
+        user_name = None
+        if supabase:
+            try:
+                user_data = supabase.table('users').select('user_name').eq('user_id', user_id).execute()
+                if user_data.data and user_data.data[0].get('user_name'):
+                    user_name = user_data.data[0]['user_name']
+            except:
+                pass
+        
+        # 直接呼叫 AI
+        is_professional = is_professional_question(message)
+        ai_response = ask_deepseek(message, user_name, is_professional)
+        
+        print(f"✅ AI 回覆: {ai_response[:50]}...")
+        
+        # 儲存回覆給網頁輪詢
+        web_pending_replies[user_id] = {"reply": ai_response, "timestamp": time.time()}
         
         return jsonify({'success': True})
         
     except Exception as e:
-        print(f"❌ 推播錯誤: {str(e)}")
+        print(f"❌ 錯誤: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route("/webchat/reply", methods=['GET'])
