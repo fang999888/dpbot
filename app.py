@@ -1,4 +1,4 @@
-# app.py - 蕨積專業顧問版（統一專業模式）
+# app.py - 蕨積專業顧問版（修正日期/天氣問題）
 import os
 import json
 import requests
@@ -44,6 +44,9 @@ CWA_API_KEY = os.getenv('CWA_API_KEY')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 LIFF_ID = os.getenv('LIFF_ID', '')
 
+# 台灣時區
+TAIPEI_TZ = pytz.timezone('Asia/Taipei')
+
 # ==================== 初始化各服務 ====================
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -67,8 +70,30 @@ else:
     gemini_vision_model = None
     print("⚠️ 未設定 Gemini API Key，圖片識別功能將無法使用")
 
-# ==================== 網頁對話暫存區（僅供網頁使用）====================
-web_pending_replies = {}  # {user_id: {"reply": "內容", "timestamp": time}}
+# ==================== 獲取當前台灣時間 ====================
+def get_current_time():
+    """取得當前台灣時間 (Asia/Taipei)"""
+    now = datetime.now(TAIPEI_TZ)
+    return now
+
+def get_current_date_str():
+    """取得當前日期字串，例如：2026年4月14日"""
+    now = get_current_time()
+    return f"{now.year}年{now.month}月{now.day}日"
+
+def get_current_weekday():
+    """取得當前星期幾"""
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    now = get_current_time()
+    return weekdays[now.weekday()]
+
+def get_full_datetime_str():
+    """取得完整日期時間字串"""
+    now = get_current_time()
+    return f"{now.year}年{now.month}月{now.day}日 {now.hour}:{now.minute:02d}"
+
+# ==================== 網頁對話暫存區 ====================
+web_pending_replies = {}
 
 # ==================== 蕨積賣萌圖片回覆庫 ====================
 SORRY_MESSAGES = [
@@ -172,56 +197,52 @@ def get_watering_advice(weather_data):
     else:
         return "🌿 天氣不錯，正常澆水就好"
 
-# ==================== 專業關鍵字權重（統一專業模式）====================
+# ==================== 專業關鍵字權重 ====================
 PROFESSIONAL_WEIGHTS = {
-    # 植物相關
     "多肉": 3, "龜背芋": 3, "琴葉榕": 3, "虎尾蘭": 3, 
     "蕨類": 3, "觀音蓮": 3, "蔓綠絨": 3, "彩葉芋": 3, "竹芋": 3,
     "發財樹": 3, "幸福樹": 3, "龍血樹": 3, "黃金葛": 3, "吊蘭": 3,
     "常春藤": 3, "薄荷": 3, "迷迭香": 3, "薰衣草": 3, "羅勒": 3,
     "辣椒": 3, "番茄": 3, "草莓": 3, "藍莓": 3,
     "植生牆": 3, "綠牆": 3, "垂直綠化": 3,
-    # 植物病症
     "軟": 2, "黃": 2, "黑": 2, "爛": 2, "枯": 2, "掉": 2, "垂": 2,
     "軟葉": 3, "發黃": 3, "變黃": 3, "黑斑": 3, "爛根": 3,
     "枯萎": 3, "掉葉": 3, "徒長": 3, "化水": 3, "曬傷": 3,
     "斑": 2, "洞": 2, "蟲": 3, "介殼蟲": 3, "紅蜘蛛": 3,
     "蚜蟲": 3, "粉蝨": 3, "黴": 2, "鏽": 2,
-    # 養護操作
     "澆水": 2, "施肥": 2, "換盆": 2, "修剪": 2, "扦插": 2,
     "分株": 2, "播種": 2, "授粉": 2,
     "日照": 1, "光照": 1, "通風": 1, "濕度": 1, "介質": 1,
     "土": 1, "盆": 1, "水": 1,
-    # 碳盤查相關
     "碳": 3, "碳盤查": 3, "溫室氣體": 3, "碳排放": 3, "ISO": 3,
     "14064": 3, "14067": 3, "範疇": 3, "碳足跡": 3, "碳中和": 3,
     "減碳": 3, "淨零": 3, "永續": 2, "ESG": 3,
-    # 工程/職安相關
     "職安": 3, "營造": 3, "工地": 2, "安全": 2, "證照": 2,
     "工程": 2, "施工": 2, "工安": 3,
-    # 天氣相關（統一專業模式）
     "天氣": 2, "下雨": 2, "溫度": 2, "降雨": 2, "氣象": 2,
-    # 其他專業詞
     "學名": 2, "科屬": 2, "原生地": 2, "休眠期": 2, "生長期": 2,
     "病蟲害": 2, "防治": 2, "治療": 2, "急救": 2, "診斷": 2,
     "怎麼辦": 1, "怎麼救": 1, "為什麼": 1, "正常嗎": 1, "生病嗎": 1,
     "什麼問題": 1, "怎麼了": 1, "如何": 1, "怎樣": 1
 }
 
-PLANT_LIST = ["多肉", "龜背芋", "虎尾蘭", "仙人掌", "蕨類", "發財樹", "黃金葛", "吊蘭", "薄荷", "迷迭香", "薰衣草", "植生牆"]
-CASUAL_PHRASES = []  # 清空，不再使用賣萌模式
-
 def is_professional_question(text):
-    """統一專業模式 - 所有問題都視為專業問題"""
-    # 只要有內容就視為專業問題（除非太短且無意義）
     if len(text) <= 2:
         return False
     return True
 
-# ==================== 蕨積專業顧問人設 ====================
+# ==================== 蕨積專業顧問人設（含當前時間）====================
 def get_professional_prompt(user_name=None):
+    current_date = get_current_date_str()
+    current_weekday = get_current_weekday()
+    current_time = get_full_datetime_str()
+    
     name_part = f"用戶叫{user_name}，" if user_name else ""
     return f"""你是「蕨積」，一位跨領域的專業顧問。{name_part}
+
+【重要資訊 - 當前時間】
+今天是 {current_date}，{current_weekday}，當前時間為 {current_time}。
+請務必使用這個正確的日期來回答任何與日期、時間相關的問題！
 
 【你的專業背景】
 🔥 碳管理：熟悉 ISO 14064-1 (組織溫室氣體盤查)、ISO 14067 (產品碳足跡)
@@ -236,27 +257,10 @@ def get_professional_prompt(user_name=None):
 - 字數控制在80-200字
 - 可以適度使用🌿、💚等植物符號，但不要過度
 
-【回答格式建議】
-- 先點出問題核心
-- 給出具體解決方案
-- 可補充相關法規或標準（如適用）
-- 最後可提供延伸建議
-
-【範例1】
-用戶：台北天氣
-蕨積：根據中央氣象署資料，台北今天...（實際天氣）。建議您...（若涉及植物澆水或戶外工作建議）
-
-【範例2】
-用戶：多肉葉子變軟怎麼辦？
-蕨積：這是典型水分管理問題。從植生牆8年經驗來看...建議立即停止澆水，將植株移到通風處...（專業診斷）
-
-【範例3】
-用戶：碳盤查怎麼做？
-蕨積：依據 ISO 14064-1 標準，碳盤查需先設定組織邊界，再鑑別排放源...（專業說明）
-
 【鐵則】
 ✅ 保持專業、親切、實用
 ✅ 善用你的跨領域知識
+✅ 回答日期問題時，直接說「今天是 {current_date}，{current_weekday}」
 ❌ 不要過度使用表情符號
 """
 
@@ -266,7 +270,6 @@ def ask_deepseek(question, user_name=None, is_professional=False):
         return "🌿 蕨積去曬太陽了"
     headers = {'Authorization': f'Bearer {DEEPSEEK_API_KEY}', 'Content-Type': 'application/json'}
     
-    # 統一使用專業模式
     system_prompt = get_professional_prompt(user_name)
     data = {
         "model": "deepseek-chat",
@@ -275,7 +278,7 @@ def ask_deepseek(question, user_name=None, is_professional=False):
             {"role": "user", "content": question}
         ],
         "max_tokens": 500,
-        "temperature": 0.3  # 較低的溫度，保持回答穩定專業
+        "temperature": 0.3
     }
     
     try:
@@ -294,7 +297,7 @@ def get_or_create_user(user_id):
         if result.data:
             return result.data[0]
         else:
-            new_user = {'user_id': user_id, 'user_name': None, 'city': None, 'created_at': datetime.now(timezone.utc).isoformat(), 'last_active': datetime.now(timezone.utc).isoformat()}
+            new_user = {'user_id': user_id, 'user_name': None, 'city': None, 'created_at': datetime.now(TAIPEI_TZ).isoformat(), 'last_active': datetime.now(TAIPEI_TZ).isoformat()}
             supabase.table('users').insert(new_user).execute()
             return new_user
     except Exception as e:
@@ -322,7 +325,7 @@ def update_user_city(user_id, city):
 def update_last_active(user_id):
     if not supabase: return
     try:
-        supabase.table('users').update({'last_active': datetime.now(timezone.utc).isoformat()}).eq('user_id', user_id).execute()
+        supabase.table('users').update({'last_active': datetime.now(TAIPEI_TZ).isoformat()}).eq('user_id', user_id).execute()
     except:
         pass
 
@@ -332,7 +335,7 @@ def subscribe_user(user_id):
     try:
         existing = supabase.table('subscribers').select('*').eq('user_id', user_id).execute()
         if not existing.data:
-            data = {'user_id': user_id, 'subscribed_at': datetime.now(timezone.utc).isoformat(), 'last_push_date': None, 'is_active': True}
+            data = {'user_id': user_id, 'subscribed_at': datetime.now(TAIPEI_TZ).isoformat(), 'last_push_date': None, 'is_active': True}
             supabase.table('subscribers').insert(data).execute()
             print(f"✅ 新訂閱: {user_id}")
         else:
@@ -362,13 +365,13 @@ _last_fact = None
 
 def get_daily_plant_fact():
     global _last_fact
-    today_yday = datetime.now(timezone.utc).timetuple().tm_yday
+    today_yday = get_current_time().timetuple().tm_yday
     backup_index = today_yday % len(LOCAL_FACTS)
     backup_fact = LOCAL_FACTS[backup_index]
 
     try:
         headers = {'Authorization': f'Bearer {DEEPSEEK_API_KEY}', 'Content-Type': 'application/json'}
-        fact_prompt = """請給一則「20字內」的搞笑植物知識，要讓人會心一笑。今天的主題可以和昨天完全不同。範例：
+        fact_prompt = f"""今天是 {get_current_date_str()}，請給一則「20字內」的搞笑植物知識，要讓人會心一笑。範例：
 「香蕉是莓果，草莓不是」
 「蘆薈晚上吐氧氣」
 「含羞草不是害羞」
@@ -423,12 +426,16 @@ def send_daily_push():
     if not supabase:
         print("❌ Supabase未連線，無法推播")
         return
-    today = datetime.now(timezone.utc).date().isoformat()
-    print(f"🔍 今天的日期 (UTC): {today}")
+    
+    today_taipei = get_current_time()
+    today_str = today_taipei.date().isoformat()
+    today_display = get_current_date_str()
+    
+    print(f"🔍 今天的日期 (台北): {today_str}")
     try:
         response = supabase.table('subscribers').select('*').eq('is_active', True).execute()
         all_active = response.data
-        subscribers = [user for user in all_active if user.get('last_push_date') != today]
+        subscribers = [user for user in all_active if user.get('last_push_date') != today_str]
         if not subscribers:
             print("📭 今天沒有需要推播的用戶")
             return
@@ -455,11 +462,11 @@ def send_daily_push():
                 if weather['success']:
                     weather_text = f"\n\n今日天氣（{weather['city']}）：{weather['status']}，最高{weather['max_temp']}°C，最低{weather['min_temp']}°C，降雨機率{weather['rain_prob']}%"
 
-            message_text = f"🌱 **蕨積早安**\n\n{daily_fact}{weather_text}"
+            message_text = f"🌱 **蕨積早安 - {today_display}**\n\n{daily_fact}{weather_text}"
 
             try:
                 line_bot_api.push_message(user_id, TextSendMessage(text=message_text))
-                supabase.table('subscribers').update({'last_push_date': today}).eq('user_id', user_id).execute()
+                supabase.table('subscribers').update({'last_push_date': today_str}).eq('user_id', user_id).execute()
                 success_count += 1
             except Exception as e:
                 print(f"❌ 推播失敗 {user_id}: {e}")
@@ -471,10 +478,9 @@ def send_daily_push():
 # ==================== 排程器 ====================
 def init_scheduler():
     scheduler = BackgroundScheduler()
-    tz = pytz.timezone('Asia/Taipei')
-    scheduler.add_job(func=send_daily_push, trigger=CronTrigger(hour=8, minute=0, timezone=tz), id='daily_push', replace_existing=True)
+    scheduler.add_job(func=send_daily_push, trigger=CronTrigger(hour=8, minute=0, timezone=TAIPEI_TZ), id='daily_push', replace_existing=True)
     scheduler.start()
-    print("✅ 排程器已啟動，每天 08:00 推播")
+    print("✅ 排程器已啟動，每天 08:00 (台北時間) 推播")
     atexit.register(lambda: scheduler.shutdown())
     return scheduler
 
@@ -498,10 +504,11 @@ def callback():
 @handler.add(FollowEvent)
 def handle_follow(event):
     user_id = event.source.user_id
+    today = get_current_date_str()
     if supabase:
         get_or_create_user(user_id)
         subscribe_user(user_id)
-    welcome_msg = "🌿 蕨積專業顧問來啦！\n\n我是跨領域專業顧問，專精：\n✅ 碳盤查 (ISO 14064-1 / 14067)\n✅ 營造業職安衛\n✅ 植物養護 & 植生牆 (8年資歷)\n✅ 工程整合 & 生活提案\n\n直接說你的問題，我會用專業角度回答！"
+    welcome_msg = f"🌿 蕨積專業顧問來啦！今天是 {today}\n\n我是跨領域專業顧問，專精：\n✅ 碳盤查 (ISO 14064-1 / 14067)\n✅ 營造業職安衛\n✅ 植物養護 & 植生牆 (8年資歷)\n✅ 工程整合 & 生活提案\n\n直接說你的問題，我會用專業角度回答！"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_msg))
 
 @handler.add(UnfollowEvent)
@@ -560,6 +567,21 @@ def handle_text_message(event):
     if user_message == "我的ID":
         line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你的 LINE Bot User ID: {user_id}"))
         return
+    
+    # 查詢今天日期
+    if user_message in ["今天幾號", "今天是幾號", "今天日期", "日期", "幾月幾號", "今天星期幾", "星期幾"]:
+        today = get_current_date_str()
+        weekday = get_current_weekday()
+        reply_text = f"🌿 今天是 {today}，{weekday}"
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+        return
+    
+    # 查詢現在時間
+    if user_message in ["現在幾點", "幾點", "現在時間", "時間"]:
+        now = get_current_time()
+        reply_text = f"🌿 現在是 {now.hour}:{now.minute:02d}"
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+        return
 
     # 訂閱相關
     if supabase:
@@ -569,7 +591,7 @@ def handle_text_message(event):
             return
         if user_message in ["訂閱", "subscribe"]:
             subscribe_user(user_id)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！不定時發送植物小常識！"))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！每天08:00發送植物小常識！"))
             return
 
     # 記住名字
@@ -597,8 +619,8 @@ def handle_text_message(event):
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
-    # 天氣查詢
-    if "天氣" in user_message or "下雨" in user_message or "澆水" in user_message:
+    # 天氣查詢（修正：加入今日日期）
+    if any(keyword in user_message for keyword in ["天氣", "下雨", "澆水"]):
         city = None
         for c in CITY_MAPPING.keys():
             if c in user_message:
@@ -611,10 +633,11 @@ def handle_text_message(event):
             weather = get_weather(city)
             if weather['success']:
                 advice = get_watering_advice(weather)
+                today = get_current_date_str()
                 if user_name:
-                    reply = f"{user_name}，{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
+                    reply = f"{user_name}，今天是 {today}\n\n{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 else:
-                    reply = f"{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
+                    reply = f"今天是 {today}\n\n{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
                 if user_data and not user_data.get('city') and supabase:
                     update_user_city(user_id, city)
@@ -638,10 +661,9 @@ def handle_text_message(event):
     ai_response = ask_deepseek(user_message, user_name, is_professional=True)
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
 
-# ==================== 網頁對話 API（僅供網頁使用）====================
+# ==================== 網頁對話 API ====================
 @app.route("/webchat/send", methods=['POST'])
 def webchat_send():
-    """網頁發送訊息 - 直接呼叫 AI，存入暫存區供輪詢"""
     try:
         data = request.get_json()
         user_id = data.get('user_id')
@@ -652,7 +674,6 @@ def webchat_send():
         if not user_id or not message:
             return jsonify({'success': False, 'error': '缺少參數'}), 400
         
-        # 從 Supabase 獲取用戶名稱
         user_name = None
         if supabase:
             try:
@@ -662,12 +683,10 @@ def webchat_send():
             except:
                 pass
         
-        # 呼叫 AI（統一專業模式）
         ai_response = ask_deepseek(message, user_name, is_professional=True)
         
         print(f"✅ [網頁] AI 回覆: {ai_response[:100]}...")
         
-        # 存入網頁暫存區（僅供網頁輪詢）
         web_pending_replies[user_id] = {"reply": ai_response, "timestamp": time.time()}
         print(f"💾 [網頁] 已存入暫存區")
         
@@ -681,7 +700,6 @@ def webchat_send():
 
 @app.route("/webchat/reply", methods=['GET'])
 def webchat_get_reply():
-    """網頁輪詢取得 AI 回覆"""
     user_id = request.args.get('user_id')
     
     if not user_id:
@@ -708,13 +726,24 @@ def test_line_push():
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
+@app.route("/test-datetime", methods=['GET'])
+def test_datetime():
+    """測試日期時間函數是否正常"""
+    return {
+        "current_date": get_current_date_str(),
+        "current_weekday": get_current_weekday(),
+        "current_time": get_full_datetime_str(),
+        "timestamp": get_current_time().isoformat()
+    }, 200
+
 @app.route("/", methods=['GET'])
 def health():
     supabase_status = "✅ 已連線" if supabase else "⚠️ 未設定"
     scheduler_status = "✅ 運行中" if 'scheduler' in globals() else "⚠️ 未啟動"
     gemini_status = "✅ 已啟用" if gemini_vision_model else "⚠️ 未設定"
     liff_status = "✅ 已設定" if LIFF_ID else "⚠️ 未設定"
-    return f"🌿 蕨積專業顧問版 | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status} | LIFF: {liff_status}", 200
+    now = get_current_date_str()
+    return f"🌿 蕨積專業顧問版 | 現在時間: {now} | Supabase: {supabase_status} | 排程器: {scheduler_status} | Gemini: {gemini_status} | LIFF: {liff_status}", 200
 
 # ==================== 啟動 ====================
 if __name__ == "__main__":
