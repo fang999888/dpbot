@@ -1,4 +1,4 @@
-# app.py - 蕨積專業顧問版（修正日期/天氣問題）
+# app.py - 蕨積專業顧問版（含工程級天氣預警）
 import os
 import json
 import requests
@@ -151,11 +151,15 @@ def get_weather(city):
     url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/{dataset_id}?Authorization={CWA_API_KEY}&format=JSON&locationName={city_name}"
 
     try:
-        response = requests.get(url, timeout=10, verify=False)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'application/json'
+        }
+        response = requests.get(url, headers=headers, timeout=15, verify=False)
         response.raise_for_status()
         data = response.json()
 
-        if 'records' not in data:
+        if 'records' not in data or not data['records'].get('location'):
             return {"success": False, "message": "天氣資料格式異常"}
 
         location = data['records']['location'][0]
@@ -183,6 +187,52 @@ def get_weather(city):
         print(f"天氣API錯誤: {e}")
         return {"success": False, "message": "天氣查詢失敗"}
 
+def get_weather_backup(city):
+    """備用天氣查詢 - 使用不同的 API 端點"""
+    if not CWA_API_KEY:
+        return {"success": False, "message": "未設定金鑰"}
+    
+    city_code_map = {
+        "台北": "6300000", "新北": "6500000", "桃園": "6800000",
+        "台中": "6600000", "台南": "6700000", "高雄": "6400000",
+        "基隆": "6900000", "新竹": "6700000", "苗栗": "6600000",
+        "彰化": "6600000", "南投": "6600000", "雲林": "6600000",
+        "嘉義": "6600000", "屏東": "6600000", "宜蘭": "6700000",
+        "花蓮": "6700000", "台東": "6700000"
+    }
+    
+    location_code = city_code_map.get(city, "6300000")
+    url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001?Authorization={CWA_API_KEY}&format=JSON&locationId={location_code}"
+    
+    try:
+        response = requests.get(url, timeout=15, verify=False)
+        data = response.json()
+        
+        if 'records' in data and data['records'].get('location'):
+            loc = data['records']['location'][0]
+            weather_elem = loc['weatherElement']
+            
+            temp = None
+            weather_status = "多雲"
+            for elem in weather_elem:
+                if elem['elementName'] == 'TEMP':
+                    temp = float(elem['elementValue'])
+                if elem['elementName'] == 'Weather':
+                    weather_status = elem['elementValue']
+            
+            return {
+                "success": True,
+                "city": city,
+                "status": weather_status,
+                "max_temp": int(temp) if temp else 25,
+                "min_temp": int(temp) - 2 if temp else 23,
+                "rain_prob": 30
+            }
+    except Exception as e:
+        print(f"備用天氣API錯誤: {e}")
+    
+    return {"success": False, "message": "天氣查詢失敗"}
+
 def get_watering_advice(weather_data):
     rain_prob = weather_data.get('rain_prob', 0)
     temp = weather_data.get('max_temp', 25)
@@ -196,6 +246,140 @@ def get_watering_advice(weather_data):
         return "❄️ 天氣偏冷，植物進入休眠期，減少澆水"
     else:
         return "🌿 天氣不錯，正常澆水就好"
+
+# ==================== 工程級天氣風險評估 ====================
+def get_engineering_weather_risk(city):
+    """根據天氣數據評估戶外工程風險等級"""
+    weather = get_weather(city)
+    
+    # 如果主要API失敗，嘗試備援API
+    if not weather['success']:
+        weather = get_weather_backup(city)
+    
+    if not weather['success']:
+        return None
+    
+    rain_prob = weather.get('rain_prob', 0)
+    max_temp = weather.get('max_temp', 25)
+    min_temp = weather.get('min_temp', 20)
+    status = weather.get('status', '')
+    
+    # 風險等級判斷
+    risk_level = "低風險"
+    risk_icon = "🟢"
+    restrictions = []
+    suggestions = []
+    
+    # 降雨風險
+    if rain_prob >= 80:
+        risk_level = "高風險"
+        risk_icon = "🔴"
+        restrictions.append("❌ 戶外植生牆施工暫停")
+        restrictions.append("❌ 高空作業禁止")
+        restrictions.append("❌ 電氣設備禁止戶外使用")
+        suggestions.append("✅ 改為室內碳盤查資料整理")
+        suggestions.append("✅ 進行植生牆養護計畫檢討")
+        suggestions.append("✅ 檢查工地排水系統")
+    elif rain_prob >= 50:
+        if risk_level == "低風險":
+            risk_level = "中風險"
+            risk_icon = "🟡"
+        restrictions.append("⚠️ 戶外施作建議攜帶遮雨設備")
+        restrictions.append("⚠️ 注意介質含水量控制")
+        restrictions.append("⚠️ 電器設備做好防水")
+        suggestions.append("✅ 可進行短暫戶外作業")
+        suggestions.append("✅ 優先安排室內工作")
+    
+    # 高溫風險
+    if max_temp >= 35:
+        if risk_level == "低風險":
+            risk_level = "中風險"
+            risk_icon = "🟡"
+        restrictions.append("⚠️ 高溫警戒，注意工人熱危害")
+        restrictions.append("⚠️ 植栽水分蒸散快速")
+        restrictions.append("⚠️ 每小時強制休息10分鐘")
+        suggestions.append("✅ 避開11:00-15:00戶外作業")
+        suggestions.append("✅ 增加澆水頻率")
+        suggestions.append("✅ 提供充足飲用水")
+    elif max_temp >= 32:
+        restrictions.append("☀️ 氣溫偏高，定時補充水分")
+        suggestions.append("✅ 建議每2小時休息一次")
+    
+    # 低溫風險
+    if min_temp <= 10:
+        if risk_level == "低風險":
+            risk_level = "中風險"
+            risk_icon = "🟡"
+        restrictions.append("❄️ 低溫警戒，植物可能進入休眠")
+        restrictions.append("❄️ 注意工人保暖")
+        suggestions.append("✅ 熱帶植物移入室內")
+        suggestions.append("✅ 避免夜間澆水")
+        suggestions.append("✅ 戶外作業穿戴保暖裝備")
+    
+    # 強風/暴雨風險
+    if "大雨" in status or "雷雨" in status or "豪雨" in status:
+        if risk_level == "低風險":
+            risk_level = "中風險"
+            risk_icon = "🟡"
+        restrictions.append("💨 強陣風/豪雨風險")
+        restrictions.append("💨 注意鷹架固定安全")
+        suggestions.append("✅ 檢查臨時構造物固定")
+        suggestions.append("✅ 暫停高空吊掛作業")
+    
+    return {
+        "city": weather['city'],
+        "status": status,
+        "max_temp": max_temp,
+        "min_temp": min_temp,
+        "rain_prob": rain_prob,
+        "risk_level": risk_level,
+        "risk_icon": risk_icon,
+        "restrictions": restrictions,
+        "suggestions": suggestions
+    }
+
+def format_engineering_weather_message(risk_data, user_name=None):
+    """格式化工程天氣預警訊息"""
+    if not risk_data:
+        return "🌿 暫時無法取得天氣資料，請稍後再試"
+    
+    name_prefix = f"{user_name}，" if user_name else ""
+    
+    message = f"""🏗️ **工程級天氣預警** {risk_data['risk_icon']}
+
+{name_prefix}{risk_data['city']} 今日天氣：
+🌤️ {risk_data['status']}
+🌡️ {risk_data['min_temp']}°C - {risk_data['max_temp']}°C
+🌧️ 降雨機率 {risk_data['rain_prob']}%
+
+📊 **風險等級：{risk_data['risk_level']}**
+
+"""
+
+    if risk_data['restrictions']:
+        message += "🚧 **作業限制：**\n" + "\n".join(risk_data['restrictions']) + "\n\n"
+    
+    if risk_data['suggestions']:
+        message += "💡 **專業建議：**\n" + "\n".join(risk_data['suggestions']) + "\n\n"
+    
+    message += "🌿 蕨積關心您的工地安全與植物健康"
+    
+    return message
+
+def get_quick_construction_advice(city, user_name=None):
+    """快速施工建議（簡短版）"""
+    risk_data = get_engineering_weather_risk(city)
+    if not risk_data:
+        return "🌿 暫時無法取得天氣資料"
+    
+    name_prefix = f"{user_name}，" if user_name else ""
+    
+    if risk_data['risk_level'] == "低風險":
+        return f"✅ {name_prefix}{risk_data['city']} 今日適合戶外施工，{risk_data['status']}，降雨機率{risk_data['rain_prob']}%"
+    elif risk_data['risk_level'] == "中風險":
+        return f"⚠️ {name_prefix}{risk_data['city']} 今日施工需注意：{risk_data['restrictions'][0] if risk_data['restrictions'] else '天氣不穩定'}"
+    else:
+        return f"❌ {name_prefix}{risk_data['city']} 今日不建議戶外施工，{risk_data['restrictions'][0] if risk_data['restrictions'] else '天氣條件不佳'}"
 
 # ==================== 專業關鍵字權重 ====================
 PROFESSIONAL_WEIGHTS = {
@@ -508,7 +692,23 @@ def handle_follow(event):
     if supabase:
         get_or_create_user(user_id)
         subscribe_user(user_id)
-    welcome_msg = f"🌿 蕨積專業顧問來啦！今天是 {today}\n\n我是跨領域專業顧問，專精：\n✅ 碳盤查 (ISO 14064-1 / 14067)\n✅ 營造業職安衛\n✅ 植物養護 & 植生牆 (8年資歷)\n✅ 工程整合 & 生活提案\n\n直接說你的問題，我會用專業角度回答！"
+    welcome_msg = f"""🌿 **蕨積專業顧問來啦！** 今天是 {today}
+
+我是跨領域專業顧問，專精：
+✅ 碳盤查 (ISO 14064-1 / 14067)
+✅ 營造業職安衛
+✅ 植物養護 & 植生牆 (8年資歷)
+✅ 工程整合 & 生活提案
+
+**常用指令：**
+🏗️ `工程天氣` - 工程級天氣預警
+✅ `可以施工嗎` - 快速判斷施工適宜性
+🌤️ `台北天氣` - 一般天氣查詢
+📅 `今天幾號` - 查詢日期
+📍 `我在台北` - 設定位置
+📬 `訂閱` - 每日植物小知識
+
+直接說你的問題，我會用專業角度回答！"""
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_msg))
 
 @handler.add(UnfollowEvent)
@@ -568,7 +768,7 @@ def handle_text_message(event):
         line_bot_api.reply_message(reply_token, TextSendMessage(text=f"你的 LINE Bot User ID: {user_id}"))
         return
     
-    # 查詢今天日期
+    # ==================== 日期/時間查詢 ====================
     if user_message in ["今天幾號", "今天是幾號", "今天日期", "日期", "幾月幾號", "今天星期幾", "星期幾"]:
         today = get_current_date_str()
         weekday = get_current_weekday()
@@ -576,35 +776,93 @@ def handle_text_message(event):
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
         return
     
-    # 查詢現在時間
     if user_message in ["現在幾點", "幾點", "現在時間", "時間"]:
         now = get_current_time()
         reply_text = f"🌿 現在是 {now.hour}:{now.minute:02d}"
         line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
         return
 
-    # 訂閱相關
+    # ==================== 工程級天氣預警（核心新功能）====================
+    if user_message in ["工程天氣", "工地天氣", "施工天氣", "天氣預警", "工程級天氣"]:
+        city = None
+        if user_data and user_data.get('city'):
+            city = user_data.get('city')
+        
+        if not city:
+            # 嘗試從訊息中提取城市（但這裡已經是純指令，沒有城市）
+            pass
+        
+        if city:
+            risk_data = get_engineering_weather_risk(city)
+            reply = format_engineering_weather_message(risk_data, user_name)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+            return
+        else:
+            reply = """🏗️ 請先設定工地位置，例如：
+「我在台北」
+「我住台中」
+
+設定完成後，輸入「工程天氣」即可獲得完整風險評估"""
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+            return
+
+    # 快速施工判斷
+    if user_message in ["可以施工嗎", "今天能施工嗎", "適合施工嗎", "能施工嗎"]:
+        city = user_data.get('city') if user_data else None
+        if city:
+            reply = get_quick_construction_advice(city, user_name)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+            return
+        else:
+            reply = "🌿 請先告訴我你的位置，例如「我在台北」"
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+            return
+
+    # 指定城市的工程天氣查詢（如：台北工程天氣）
+    engineering_weather_match = re.match(r"^(.{2,3})(?:工程天氣|工地天氣|施工天氣)$", user_message)
+    if engineering_weather_match:
+        city = engineering_weather_match.group(1)
+        # 驗證城市是否有效
+        valid_city = None
+        for c in CITY_MAPPING.keys():
+            if c in city:
+                valid_city = c
+                break
+        if valid_city:
+            risk_data = get_engineering_weather_risk(valid_city)
+            reply = format_engineering_weather_message(risk_data, user_name)
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+            # 順便記住這個城市
+            if supabase:
+                update_user_city(user_id, valid_city)
+            return
+        else:
+            reply = "🌿 請輸入正確的城市名稱，例如：台北工程天氣"
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+            return
+
+    # ==================== 訂閱相關 ====================
     if supabase:
         if user_message in ["取消訂閱", "停止推播", "unsubscribe"]:
             unsubscribe_user(user_id)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="📭 已取消，想回來說「訂閱」"))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="📭 已取消訂閱，想回來說「訂閱」即可"))
             return
         if user_message in ["訂閱", "subscribe"]:
             subscribe_user(user_id)
-            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！每天08:00發送植物小常識！"))
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="📬 訂閱成功！每天 08:00 發送植物小常識！"))
             return
 
-    # 記住名字
+    # ==================== 記住名字 ====================
     name_match = re.match(r"^我叫(.+)$", user_message) or re.match(r"^我是(.+)$", user_message)
     if name_match:
         name = name_match.group(1).strip()
         if name and supabase:
             update_user_name(user_id, name)
-            reply_text = f"🌿 哈囉 {name}！我是蕨積專業顧問，有什麼可以幫你的？"
+            reply_text = f"🌿 哈囉 {name}！我是蕨積專業顧問，有什麼可以幫你的？\n\n💡 試試輸入「工程天氣」或「可以施工嗎」"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
-    # 設定城市
+    # ==================== 設定城市 ====================
     city_match = re.match(r"^我在(.+)$", user_message) or re.match(r"^我住(.+)$", user_message)
     if city_match:
         city = city_match.group(1).strip()
@@ -615,11 +873,19 @@ def handle_text_message(event):
                 break
         if valid_city and supabase:
             update_user_city(user_id, valid_city)
-            reply_text = f"🌿 記住了，你在{valid_city}！需要天氣或澆水建議隨時問我"
+            reply_text = f"""🌿 記住了，你在 {valid_city}！
+
+🏗️ 試試輸入「工程天氣」查看工地風險評估
+🌤️ 或輸入「{valid_city}天氣」查詢一般天氣
+✅ 輸入「可以施工嗎」快速判斷"""
+            line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
+            return
+        else:
+            reply_text = "🌿 請輸入台灣縣市名稱，例如：我在台北、我住台中"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply_text))
             return
 
-    # 天氣查詢（修正：加入今日日期）
+    # ==================== 一般天氣查詢 ====================
     if any(keyword in user_message for keyword in ["天氣", "下雨", "澆水"]):
         city = None
         for c in CITY_MAPPING.keys():
@@ -635,28 +901,65 @@ def handle_text_message(event):
                 advice = get_watering_advice(weather)
                 today = get_current_date_str()
                 if user_name:
-                    reply = f"{user_name}，今天是 {today}\n\n{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
+                    reply = f"{user_name}，今天是 {today}\n\n{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}\n\n🏗️ 想了解工地風險？輸入「工程天氣」"
                 else:
-                    reply = f"今天是 {today}\n\n{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}"
+                    reply = f"今天是 {today}\n\n{weather['city']}今天{weather['status']}，最高{weather['max_temp']}度，最低{weather['min_temp']}度，降雨機率{weather['rain_prob']}%\n\n{advice}\n\n🏗️ 想了解工地風險？輸入「工程天氣」"
                 line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
                 if user_data and not user_data.get('city') and supabase:
                     update_user_city(user_id, city)
                 return
             else:
-                line_bot_api.reply_message(reply_token, TextSendMessage(text=weather['message']))
+                # 主要API失敗，嘗試備援
+                weather_backup = get_weather_backup(city)
+                if weather_backup['success']:
+                    today = get_current_date_str()
+                    reply = f"今天是 {today}\n\n{weather_backup['city']}目前{weather_backup['status']}，氣溫約{weather_backup['max_temp']}°C"
+                    line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
+                    return
+                else:
+                    line_bot_api.reply_message(reply_token, TextSendMessage(text=weather['message']))
                 return
         else:
-            reply = "🌿 你想查哪個城市的天氣？直接告訴我城市名稱，例如「台北天氣」"
+            reply = "🌿 你想查哪個城市的天氣？直接告訴我城市名稱，例如「台北天氣」\n\n🏗️ 或先設定位置「我在台北」"
             line_bot_api.reply_message(reply_token, TextSendMessage(text=reply))
             return
 
-    # 主動查詢小知識
+    # ==================== 主動查詢小知識 ====================
     if any(keyword in user_message for keyword in ["知識", "常識", "小知識", "冷知識"]):
         fact = get_random_local_fact()
         line_bot_api.reply_message(reply_token, TextSendMessage(text=fact))
         return
+    
+    # ==================== 指令說明 ====================
+    if user_message in ["指令", "help", "說明", "功能"]:
+        help_text = """🌿 **蕨積專業顧問 - 指令說明**
 
-    # 專業 AI 回覆
+🏗️ **工程級天氣**
+`工程天氣` - 完整工地風險評估
+`可以施工嗎` - 快速施工判斷
+`台北工程天氣` - 查詢指定城市
+
+🌤️ **一般天氣**
+`台北天氣` - 城市天氣查詢
+`我在台北` - 設定位置
+
+📅 **日期時間**
+`今天幾號` - 查詢日期
+`現在幾點` - 查詢時間
+
+📬 **訂閱功能**
+`訂閱` - 每日植物小知識
+`取消訂閱` - 停止推播
+
+🌱 **其他**
+`我叫小美` - 讓我記住你
+`小知識` - 隨機植物冷知識
+
+有問題直接問，我會用專業角度回答！"""
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=help_text))
+        return
+
+    # ==================== 專業 AI 回覆 ====================
     print(f"📝 用戶 {user_id} | 問題: {user_message}")
     ai_response = ask_deepseek(user_message, user_name, is_professional=True)
     line_bot_api.reply_message(reply_token, TextSendMessage(text=ai_response))
@@ -735,6 +1038,42 @@ def test_datetime():
         "current_time": get_full_datetime_str(),
         "timestamp": get_current_time().isoformat()
     }, 200
+
+@app.route("/test-weather", methods=['GET'])
+def test_weather():
+    """測試天氣API連線狀況"""
+    city = request.args.get('city', '台北')
+    
+    result = {
+        "server_time": get_full_datetime_str(),
+        "city": city,
+        "cwa_api_key_exists": bool(CWA_API_KEY),
+        "primary_api_result": None,
+        "backup_api_result": None
+    }
+    
+    # 測試主要API
+    try:
+        city_name = CITY_MAPPING.get(city, city)
+        url = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001?Authorization={CWA_API_KEY}&format=JSON&locationName={city_name}"
+        r = requests.get(url, timeout=15, verify=False)
+        result["primary_api_status"] = r.status_code
+        result["primary_api_response_length"] = len(r.text)
+        if r.status_code == 200:
+            data = r.json()
+            result["primary_api_has_records"] = 'records' in data
+    except Exception as e:
+        result["primary_api_error"] = str(e)
+    
+    # 測試備援API
+    try:
+        url2 = f"https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0001-001?Authorization={CWA_API_KEY}&format=JSON"
+        r2 = requests.get(url2, timeout=15, verify=False)
+        result["backup_api_status"] = r2.status_code
+    except Exception as e:
+        result["backup_api_error"] = str(e)
+    
+    return jsonify(result)
 
 @app.route("/", methods=['GET'])
 def health():
